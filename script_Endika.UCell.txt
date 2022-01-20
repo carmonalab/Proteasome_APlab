@@ -1,0 +1,1428 @@
+#################################################################################################################
+#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#
+#~#~#~#~#~#~#~#~#    Manage data and generate the infiltrating CTL sample (pan cancer)    #~#~#~#~#~#~#~#~#~#~#~#
+#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#
+#################################################################################################################
+
+########################################
+### Arrancar R en Indar a traves del terminal ###
+########################################
+
+# Conectado desde cualquier red:
+ssh -X -p 22897 person@150.241.249.25
+
+# Conectado desde un cable de red en bioGUNE:
+ssh -X -p 22897 eprieto@hd04.cicbiogune.int
+
+# Desde el ordenador personal de CIC bioGUNE:
+ssh eprieto@hd04.cicibiogune.int
+
+##############################
+######### Libraries ##########
+##############################
+
+library(ellipsis)
+library(Seurat)
+library(SeuratDisk)
+library(dplyr)
+library(patchwork)
+library(BiocManager)
+library(metap)
+library(xlsx)
+library(plyr)
+library(tidyverse)
+library(ggplot2)
+library(renv)
+library(Matrix)
+library(ProjecTILs)
+library(gridExtra)
+library(GEOquery)
+library(devtools)
+library(presto)
+library(msigdbr)
+library(fgsea)
+library(dplyr)
+library(ggplot2)
+library(Scillus)
+library(UCell)
+set.seed(123)
+
+#######################################
+######### BRCA HER2+ (Figure) #########
+#######################################
+
+data <- readRDS("1864-counts_tcell_cohort1.rds", refhook = NULL)
+metadata <- read.csv("1870-BIOKEY_metaData_tcells_cohort1_web.csv", sep = ";")
+rownames(metadata) <- metadata$Cell
+seurat <- CreateSeuratObject(counts = data, meta.data = metadata)
+
+seurat[["percent.mt"]] <- PercentageFeatureSet(seurat, pattern = "^MT")
+
+#VlnPlot(seurat, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+seurat <- subset(seurat, subset = nFeature_RNA > 400 & nFeature_RNA < 2750)
+seurat <- subset(seurat, subset = nCount_RNA > 200 & nCount_RNA < 10000)
+seurat <- subset(seurat, subset = percent.mt > 0 & percent.mt < 10)
+
+#plot1 <- FeatureScatter(seurat, feature1 = "nCount_RNA", feature2 = "percent.mt")
+#plot2 <- FeatureScatter(seurat, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+#plot1 + plot2
+
+levels(as.factor(seurat@meta.data$BC_type))
+
+# HER2+
+
+seurat <- subset(seurat, subset = BC_type == "HER2+")
+
+seurat <- NormalizeData(seurat, normalization.method = "LogNormalize", scale.factor = 10000)
+seurat <- FindVariableFeatures(seurat, selection.method = "vst", verbose = T)
+seurat_genes <- rownames(seurat)
+seurat <- ScaleData(seurat, features = seurat_genes)
+
+seurat <- RunPCA(seurat, features = VariableFeatures(object = seurat))
+
+ElbowPlot(seurat)
+
+seurat <- FindNeighbors(seurat, dims = 1:10)
+seurat <- FindClusters(seurat, resolution = 1.2)
+seurat <- RunUMAP(seurat, dims = 1:10)
+
+#DimPlot(seurat, reduction = "umap", group.by = "cellSubType")
+
+#saveRDS(object = seurat, file = "BRCA_Carmona_object.rds", refhook = NULL)
+
+# Extraer los CTLs de BRCA_Carmona
+
+ref <- load.reference.map()
+
+#BRCA <- readRDS("BRCA_Carmona/BRCA_Carmona_object.rds", refhook = NULL)
+
+BRCA = seurat
+
+levels(as.factor(BRCA@meta.data$timepoint))
+summary(as.factor(BRCA@meta.data$cellSubType))
+
+#cd8_BRCA <- c("CD8_EM", "CD8_EMRA", "CD8_EX", "CD8_EX_Proliferating", "CD8_N", "CD8_RM")
+
+#BRCA <- subset(BRCA, subset = cellSubType %in% cd8_BRCA)
+#summary(as.factor(BRCA@meta.data$cellSubType))
+
+BRCA <- cellstate.predict(ref = ref, query = BRCA)
+summary(as.factor(BRCA@meta.data$functional.cluster))
+
+cd8_BRCA <- c("CD8_EarlyActiv", "CD8_EffectorMemory", "CD8_NaiveLike", "CD8_Tex", "CD8_Tpex")
+
+BRCA <- subset(BRCA, subset = functional.cluster %in% cd8_BRCA)
+summary(as.factor(BRCA@meta.data$functional.cluster))
+
+BRCA$Study <- "BRCA"
+
+# Gene signatures
+  
+exp.mat <- BRCA@assays[["RNA"]]@counts
+
+signatures <- list(UPS = c("PSMB2", "PSMC3", "RBX1"),
+                   PROTEASOME = c("PSMA1", "PSMA2", "PSMA3", "PSMA4", "PSMA5", "PSMA6", "PSMA7", "PSMB1", "PSMB2", "PSMB3", "PSMB4", "PSMB5", "PSMB6", "PSMB7", "PSMC1", "PSMC2", "PSMC3", "PSMC4", "PSMC5", "PSMC6", "PSMD1", "PSMD2", "PSMD3", "PSMD4", "PSMD6", "PSMD7", "PSMD8", "PSMD11", "PSMD12", "PSMD13", "PSMD14"),
+                   HYPOXIC_EXHAUSTION = c("PSMC3", "PSMB2", "RBPJ", "RBX1", "PKM", "PGK1", "PSMB8", "ENO1", "LDHA", "CHCHD2"),
+                   CHAPERONAS = c("PSMG1", "PSMG2", "PSMG3", "PSMG4", "POMP", "PSMD9", "PSMD5", "PAAF1"),
+                   TF = c("NRF1", "NFE2L1"),
+                   EXHAUSTION = c("LAG3", "XCL1", "CRTAM", "IFNG", "CCL4", "PDCD1", "DUSP4", "ZEB2", "NR4A2", "SLA", "TIGIT", "TNFRSF9", "TOX", "LYST", "TNFSF4", "CCL3", "RAB27A", "CD70", "PLSCR1", "CXCL13", "HAVCR2", "CTSD", "ID2", "CD63", "RBPJ", "FAM3C", "CSF1", "ENTPD1"),
+                   EFFECTOR_MEMORY = c("GZMK", "NKG7", "GZMB", "PRF1", "ABI3", "FASLG", "C12orf75", "EOMES", "CHST12", "CCR5", "HCST", "HOPX", "SLAMF7", "CXCR3", "OASL", "F2R", "CXCR6"),
+                   NAIVE = c("CCR7", "IL7R", "SELL", "TCF7", "TXK", "S1PR1", "LEF1", "SATB1"),
+                   EARLY_ACTIVATED = c("FOS", "CD69", "ZFP36", "FOSB", "CCL5", "GZMM", "DUSP2", "LYAR", "SAMD3", "CXCR4", "CTSW", "CD8A", "ANXA1", "KLRG1", "CD8B", "AOAH", "TAGAP", "KLRD1", "IER2", "GZMA", "CST7", "ITM2C", "PARP8", "BTG2")
+)
+
+u.scores <- ScoreSignatures_UCell(exp.mat, features = signatures)
+
+BRCA <- AddMetaData(BRCA, metadata = as.data.frame(u.scores))
+
+signature.names <- paste0(names(signatures), "_UCell")
+
+#saveRDS(object = BRCA, file= "HER2+_CTLs.rds", refhook = NULL)
+#readRDS(file = "HER2+_CTLs.rds", refhook = NULL)
+
+DimPlot(BRCA, reduction = "umap", group.by = "functional.cluster") + 
+  DimPlot(BRCA, reduction = "umap", group.by = "timepoint")
+
+FeaturePlot(BRCA, reduction = "umap", features = signature.names, ncol = 4, order = T, cols = c("black", "red"))
+
+ER_Tn <- subset(BRCA, subset = functional.cluster == "CD8_NaiveLike")
+ER_Tn_PROTEASOME <- ER_Tn$PROTEASOME_UCell
+write.csv(ER_Tn_PROTEASOME, "ER_Tn_PROTEASOME.csv", sep = ",", dec= ".")
+
+ER_Tea <- subset(BRCA, subset = functional.cluster == "CD8_EarlyActiv")
+ER_Tea_PROTEASOME <- ER_Tea$PROTEASOME_UCell
+write.csv(ER_Tea_PROTEASOME, "ER_Tea_PROTEASOME.csv", sep = ",", dec= ".")
+
+ER_Tem <- subset(BRCA, subset = functional.cluster == "CD8_EffectorMemory")
+ER_Tem_PROTEASOME <- ER_Tem$PROTEASOME_UCell
+write.csv(ER_Tem_PROTEASOME, "ER_Tem_PROTEASOME.csv", sep = ",", dec= ".")
+
+ER_Tpex <- subset(BRCA, subset = functional.cluster == "CD8_Tpex")
+ER_Tpex_PROTEASOME <- ER_Tpex$PROTEASOME_UCell
+write.csv(ER_Tpex_PROTEASOME, "ER_Tpex_PROTEASOME.csv", sep = ",", dec= ".")
+
+ER_Tex <- subset(BRCA, subset = functional.cluster == "CD8_Tex")
+ER_Tex_PROTEASOME <- ER_Tex$PROTEASOME_UCell
+write.csv(ER_Tex_PROTEASOME, "ER_Tex_PROTEASOME.csv", sep = ",", dec= ".")
+
+#Correlacion entre proteasome y exhaustion
+
+row.names = colnames(BRCA)
+functional.cluster = BRCA@meta.data$functional.cluster
+proteasome = BRCA@meta.data$PROTEASOME_UCell
+exhaustion = BRCA@meta.data$EXHAUSTION_UCell
+
+cor.table = as.data.frame(row.names = row.names, x= functional.cluster)
+cor.table$proteasome = proteasome
+cor.table$exhaustion = exhaustion
+
+write.csv(cor.table, "correlation table.csv", sep = ",", dec = ".")
+
+############################
+######### BRCA ER+ #########
+############################
+
+data <- readRDS("1864-counts_tcell_cohort1.rds", refhook = NULL)
+metadata <- read.csv("1870-BIOKEY_metaData_tcells_cohort1_web.csv", sep = ";")
+rownames(metadata) <- metadata$Cell
+seurat <- CreateSeuratObject(counts = data, meta.data = metadata)
+
+seurat[["percent.mt"]] <- PercentageFeatureSet(seurat, pattern = "^MT")
+
+#VlnPlot(seurat, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+seurat <- subset(seurat, subset = nFeature_RNA > 400 & nFeature_RNA < 2750)
+seurat <- subset(seurat, subset = nCount_RNA > 200 & nCount_RNA < 10000)
+seurat <- subset(seurat, subset = percent.mt > 0 & percent.mt < 10)
+
+#plot1 <- FeatureScatter(seurat, feature1 = "nCount_RNA", feature2 = "percent.mt")
+#plot2 <- FeatureScatter(seurat, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+#plot1 + plot2
+
+summary(as.factor(seurat@meta.data$BC_type))
+
+# ER+
+
+seurat <- subset(seurat, subset = BC_type == "ER+")
+
+seurat <- NormalizeData(seurat, normalization.method = "LogNormalize", scale.factor = 10000)
+seurat <- FindVariableFeatures(seurat, selection.method = "vst", verbose = T)
+seurat_genes <- rownames(seurat)
+seurat <- ScaleData(seurat, features = seurat_genes)
+
+seurat <- RunPCA(seurat, features = VariableFeatures(object = seurat))
+
+ElbowPlot(seurat)
+
+seurat <- FindNeighbors(seurat, dims = 1:10)
+seurat <- FindClusters(seurat, resolution = 1.2)
+seurat <- RunUMAP(seurat, dims = 1:10)
+
+#DimPlot(seurat, reduction = "umap", group.by = "cellSubType")
+
+#saveRDS(object = seurat, file = "BRCA_Carmona_object.rds", refhook = NULL)
+
+# Extraer los CTLs de BRCA_Carmona
+
+ref <- load.reference.map()
+
+#BRCA <- readRDS("BRCA_Carmona/BRCA_Carmona_object.rds", refhook = NULL)
+
+BRCA = seurat
+
+levels(as.factor(BRCA@meta.data$timepoint))
+summary(as.factor(BRCA@meta.data$cellSubType))
+
+#cd8_BRCA <- c("CD8_EM", "CD8_EMRA", "CD8_EX", "CD8_EX_Proliferating", "CD8_N", "CD8_RM")
+
+#BRCA <- subset(BRCA, subset = cellSubType %in% cd8_BRCA)
+#summary(as.factor(BRCA@meta.data$cellSubType))
+
+BRCA <- cellstate.predict(ref = ref, query = BRCA)
+summary(as.factor(BRCA@meta.data$functional.cluster))
+
+cd8_BRCA <- c("CD8_EarlyActiv", "CD8_EffectorMemory", "CD8_NaiveLike", "CD8_Tex", "CD8_Tpex")
+
+BRCA <- subset(BRCA, subset = functional.cluster %in% cd8_BRCA)
+summary(as.factor(BRCA@meta.data$functional.cluster))
+
+BRCA$Study <- "BRCA"
+
+# Gene signatures
+
+exp.mat <- BRCA@assays[["RNA"]]@counts
+
+signatures <- list(UPS = c("PSMB2", "PSMC3", "RBX1"),
+                   PROTEASOME = c("PSMA1", "PSMA2", "PSMA3", "PSMA4", "PSMA5", "PSMA6", "PSMA7", "PSMB1", "PSMB2", "PSMB3", "PSMB4", "PSMB5", "PSMB6", "PSMB7", "PSMC1", "PSMC2", "PSMC3", "PSMC4", "PSMC5", "PSMC6", "PSMD1", "PSMD2", "PSMD3", "PSMD4", "PSMD6", "PSMD7", "PSMD8", "PSMD11", "PSMD12", "PSMD13", "PSMD14"),
+                   HYPOXIC_EXHAUSTION = c("PSMC3", "PSMB2", "RBPJ", "RBX1", "PKM", "PGK1", "PSMB8", "ENO1", "LDHA", "CHCHD2"),
+                   CHAPERONAS = c("PSMG1", "PSMG2", "PSMG3", "PSMG4", "POMP", "PSMD9", "PSMD5", "PAAF1"),
+                   TF = c("NRF1", "NFE2L1"),
+                   EXHAUSTION = c("LAG3", "XCL1", "CRTAM", "IFNG", "CCL4", "PDCD1", "DUSP4", "ZEB2", "NR4A2", "SLA", "TIGIT", "TNFRSF9", "TOX", "LYST", "TNFSF4", "CCL3", "RAB27A", "CD70", "PLSCR1", "CXCL13", "HAVCR2", "CTSD", "ID2", "CD63", "RBPJ", "FAM3C", "CSF1", "ENTPD1"),
+                   EFFECTOR_MEMORY = c("GZMK", "NKG7", "GZMB", "PRF1", "ABI3", "FASLG", "C12orf75", "EOMES", "CHST12", "CCR5", "HCST", "HOPX", "SLAMF7", "CXCR3", "OASL", "F2R", "CXCR6"),
+                   NAIVE = c("CCR7", "IL7R", "SELL", "TCF7", "TXK", "S1PR1", "LEF1", "SATB1"),
+                   EARLY_ACTIVATED = c("FOS", "CD69", "ZFP36", "FOSB", "CCL5", "GZMM", "DUSP2", "LYAR", "SAMD3", "CXCR4", "CTSW", "CD8A", "ANXA1", "KLRG1", "CD8B", "AOAH", "TAGAP", "KLRD1", "IER2", "GZMA", "CST7", "ITM2C", "PARP8", "BTG2")
+)
+
+u.scores <- ScoreSignatures_UCell(exp.mat, features = signatures)
+u.scores[1:8, 1:7]
+
+BRCA <- AddMetaData(BRCA, metadata = as.data.frame(u.scores))
+
+signature.names <- paste0(names(signatures), "_UCell")
+
+DimPlot(BRCA, reduction = "umap", group.by = "functional.cluster") + 
+  DimPlot(BRCA, reduction = "umap", group.by = "timepoint")
+
+#saveRDS(object = BRCA, file= "HER2+_CTLs.rds", refhook = NULL)
+#readRDS(file = "HER2+_CTLs.rds", refhook = NULL)
+
+FeaturePlot(BRCA, reduction = "umap", features = signature.names, ncol = 4, order = T)
+
+HER2_Tn <- subset(BRCA, subset = functional.cluster == "CD8_NaiveLike")
+HER2_Tn_UPS <- HER2_Tn$UPS_UCell
+write.csv(HER2_Tn_UPS, "HER2_Tn_UPS.csv", sep = ",", dec= ".")
+
+
+HER2_Tea <- subset(BRCA, subset = functional.cluster == "CD8_EarlyActiv")
+HER2_Tea_UPS <- HER2_Tea$UPS_UCell
+write.csv(HER2_Tea_UPS, "HER2_Tea_UPS.csv", sep = ",", dec= ".")
+
+HER2_Tem <- subset(BRCA, subset = functional.cluster == "CD8_EffectorMemory")
+HER2_Tem_UPS <- HER2_Tem$UPS_UCell
+write.csv(HER2_Tem_UPS, "HER2_Tem_UPS.csv", sep = ",", dec= ".")
+
+HER2_Tpex <- subset(BRCA, subset = functional.cluster == "CD8_Tpex")
+HER2_Tpex_UPS <- HER2_Tpex$UPS_UCell
+write.csv(HER2_Tpex_UPS, "HER2_Tpex_UPS.csv", sep = ",", dec= ".")
+
+HER2_Tex <- subset(BRCA, subset = functional.cluster == "CD8_Tex")
+HER2_Tex_UPS <- HER2_Tex$UPS_UCell
+write.csv(HER2_Tex_UPS, "HER2_Tex_UPS.csv", sep = ",", dec= ".")
+
+#Correlacion entre proteasome y exhaustion
+
+#############################
+######### BRCA TNBC #########
+#############################
+
+data <- readRDS("1864-counts_tcell_cohort1.rds", refhook = NULL)
+metadata <- read.csv("1870-BIOKEY_metaData_tcells_cohort1_web.csv", sep = ";")
+rownames(metadata) <- metadata$Cell
+seurat <- CreateSeuratObject(counts = data, meta.data = metadata)
+
+seurat[["percent.mt"]] <- PercentageFeatureSet(seurat, pattern = "^MT")
+
+#VlnPlot(seurat, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+seurat <- subset(seurat, subset = nFeature_RNA > 400 & nFeature_RNA < 2750)
+seurat <- subset(seurat, subset = nCount_RNA > 200 & nCount_RNA < 10000)
+seurat <- subset(seurat, subset = percent.mt > 0 & percent.mt < 10)
+
+#plot1 <- FeatureScatter(seurat, feature1 = "nCount_RNA", feature2 = "percent.mt")
+#plot2 <- FeatureScatter(seurat, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+#plot1 + plot2
+
+levels(as.factor(seurat@meta.data$BC_type))
+
+# TNBC
+
+seurat <- subset(seurat, subset = BC_type == "TNBC")
+
+seurat <- NormalizeData(seurat, normalization.method = "LogNormalize", scale.factor = 10000)
+seurat <- FindVariableFeatures(seurat, selection.method = "vst", verbose = T)
+seurat_genes <- rownames(seurat)
+seurat <- ScaleData(seurat, features = seurat_genes)
+
+seurat <- RunPCA(seurat, features = VariableFeatures(object = seurat))
+
+ElbowPlot(seurat)
+
+seurat <- FindNeighbors(seurat, dims = 1:10)
+seurat <- FindClusters(seurat, resolution = 1.2)
+seurat <- RunUMAP(seurat, dims = 1:10)
+
+#DimPlot(seurat, reduction = "umap", group.by = "cellSubType")
+
+#saveRDS(object = seurat, file = "BRCA_Carmona_object.rds", refhook = NULL)
+
+# Extraer los CTLs de BRCA_Carmona
+
+ref <- load.reference.map()
+
+#BRCA <- readRDS("BRCA_Carmona/BRCA_Carmona_object.rds", refhook = NULL)
+
+BRCA = seurat
+
+levels(as.factor(BRCA@meta.data$timepoint))
+summary(as.factor(BRCA@meta.data$cellSubType))
+
+#cd8_BRCA <- c("CD8_EM", "CD8_EMRA", "CD8_EX", "CD8_EX_Proliferating", "CD8_N", "CD8_RM")
+
+#BRCA <- subset(BRCA, subset = cellSubType %in% cd8_BRCA)
+#summary(as.factor(BRCA@meta.data$cellSubType))
+
+BRCA <- cellstate.predict(ref = ref, query = BRCA)
+summary(as.factor(BRCA@meta.data$functional.cluster))
+
+cd8_BRCA <- c("CD8_EarlyActiv", "CD8_EffectorMemory", "CD8_NaiveLike", "CD8_Tex", "CD8_Tpex")
+
+BRCA <- subset(BRCA, subset = functional.cluster %in% cd8_BRCA)
+summary(as.factor(BRCA@meta.data$functional.cluster))
+
+BRCA$Study <- "BRCA"
+
+# Gene signatures
+
+exp.mat <- BRCA@assays[["RNA"]]@counts
+
+signatures <- list(UPS = c("PSMB2", "PSMC3", "RBX1"),
+                   PROTEASOME = c("PSMA1", "PSMA2", "PSMA3", "PSMA4", "PSMA5", "PSMA6", "PSMA7", "PSMB1", "PSMB2", "PSMB3", "PSMB4", "PSMB5", "PSMB6", "PSMB7", "PSMC1", "PSMC2", "PSMC3", "PSMC4", "PSMC5", "PSMC6", "PSMD1", "PSMD2", "PSMD3", "PSMD4", "PSMD6", "PSMD7", "PSMD8", "PSMD11", "PSMD12", "PSMD13", "PSMD14"),
+                   HYPOXIC_EXHAUSTION = c("PSMC3", "PSMB2", "RBPJ", "RBX1", "PKM", "PGK1", "PSMB8", "ENO1", "LDHA", "CHCHD2"),
+                   CHAPERONAS = c("PSMG1", "PSMG2", "PSMG3", "PSMG4", "POMP", "PSMD9", "PSMD5", "PAAF1"),
+                   TF = c("NRF1", "NFE2L1"),
+                   EXHAUSTION = c("LAG3", "XCL1", "CRTAM", "IFNG", "CCL4", "PDCD1", "DUSP4", "ZEB2", "NR4A2", "SLA", "TIGIT", "TNFRSF9", "TOX", "LYST", "TNFSF4", "CCL3", "RAB27A", "CD70", "PLSCR1", "CXCL13", "HAVCR2", "CTSD", "ID2", "CD63", "RBPJ", "FAM3C", "CSF1", "ENTPD1"),
+                   EFFECTOR_MEMORY = c("GZMK", "NKG7", "GZMB", "PRF1", "ABI3", "FASLG", "C12orf75", "EOMES", "CHST12", "CCR5", "HCST", "HOPX", "SLAMF7", "CXCR3", "OASL", "F2R", "CXCR6"),
+                   NAIVE = c("CCR7", "IL7R", "SELL", "TCF7", "TXK", "S1PR1", "LEF1", "SATB1"),
+                   EARLY_ACTIVATED = c("FOS", "CD69", "ZFP36", "FOSB", "CCL5", "GZMM", "DUSP2", "LYAR", "SAMD3", "CXCR4", "CTSW", "CD8A", "ANXA1", "KLRG1", "CD8B", "AOAH", "TAGAP", "KLRD1", "IER2", "GZMA", "CST7", "ITM2C", "PARP8", "BTG2")
+)
+
+u.scores <- ScoreSignatures_UCell(exp.mat, features = signatures)
+u.scores[1:8, 1:7]
+
+BRCA <- AddMetaData(BRCA, metadata = as.data.frame(u.scores))
+
+signature.names <- paste0(names(signatures), "_UCell")
+
+DimPlot(BRCA, reduction = "umap", group.by = "functional.cluster") + 
+  DimPlot(BRCA, reduction = "umap", group.by = "timepoint")
+
+#saveRDS(object = BRCA, file= "ER+_CTLs.rds", refhook = NULL)
+#readRDS(file = "ER+_CTLs.rds", refhook = NULL)
+
+FeaturePlot(BRCA, reduction = "umap", features = signature.names, ncol = 4, order = T, cols = c("black", "red"))
+
+TNBC_Tn <- subset(BRCA, subset = functional.cluster == "CD8_NaiveLike")
+TNBC_Tn_UPS <- TNBC_Tn$UPS_UCell
+write.csv(TNBC_Tn_UPS, "TNBC_Tn_UPS.csv", sep = ",", dec= ".")
+
+TNBC_Tea <- subset(BRCA, subset = functional.cluster == "CD8_EarlyActiv")
+TNBC_Tea_UPS <- TNBC_Tea$UPS_UCell
+write.csv(TNBC_Tea_UPS, "TNBC_Tea_UPS.csv", sep = ",", dec= ".")
+
+TNBC_Tem <- subset(BRCA, subset = functional.cluster == "CD8_EffectorMemory")
+TNBC_Tem_UPS <- TNBC_Tem$UPS_UCell
+write.csv(TNBC_Tem_UPS, "TNBC_Tem_UPS.csv", sep = ",", dec= ".")
+
+TNBC_Tpex <- subset(BRCA, subset = functional.cluster == "CD8_Tpex")
+TNBC_Tpex_UPS <- TNBC_Tpex$UPS_UCell
+write.csv(TNBC_Tpex_UPS, "TNBC_Tpex_UPS.csv", sep = ",", dec= ".")
+
+TNBC_Tex <- subset(BRCA, subset = functional.cluster == "CD8_Tex")
+TNBC_Tex_UPS <- TNBC_Tex$UPS_UCell
+write.csv(TNBC_Tex_UPS, "TNBC_Tex_UPS.csv", sep = ",", dec= ".")
+
+#######################################
+######### SKCM anti-CTLA4+PD1 #########
+#######################################
+
+# En el terminal, conectado desde un cable de red en bioGUNE:
+
+# ssh -X -p 22897 eprieto@hd04.cicbiogune.int
+# Navegar hasta la carpeta de interes:
+# cic-R4.0.5
+# R
+# library(Seurat)
+
+# Tutorial: https://carmonalab.github.io/ProjecTILs_CaseStudies/SadeFeldman_ortho.html#cb1-1
+
+exp.mat <- read.delim("GSE120575_Sade_Feldman_melanoma_single_cells_TPM_GEO.txt", header = F, sep = "\t")
+
+genes <- exp.mat[c(-1, -2), 1]
+cells <- as.vector(t(exp.mat[1, 2:16292]))
+samples <- as.factor(t(exp.mat[2, 2:16292]))
+
+exp.mat <- exp.mat[c(-1, -2), 2:16292]
+colnames(exp.mat) <- cells
+rownames(exp.mat) <- genes
+
+meta <- read.csv("GSE120575_patient_ID_single_cells.csv", sep = ";") # Lo he abierto y guardado como .csv antes, quitando todo lo inservible.
+rownames(meta) <- meta$title
+meta[, 1:7]
+
+# treat <- factor(ifelse(grepl("Post", samples), "Post", "Pre"))
+# response <- factor(meta$characteristics..response)
+# therapy <- factor(meta$characteristics..therapy)
+
+seurat <- CreateSeuratObject(counts = exp.mat, project = "SadeFeldman", meta.data = meta, min.cells = 10)
+#saveRDS(seurat, "SKCM_Carmona_object.rds", refhook= NULL)
+
+seurat[["percent.mt"]] <- PercentageFeatureSet(seurat, pattern = "^MT")
+
+VlnPlot(seurat, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+seurat <- subset(seurat, subset = nFeature_RNA > 0 & nFeature_RNA < 3000)
+seurat <- subset(seurat, subset = nCount_RNA > 10000 & nCount_RNA < 20000)
+seurat <- subset(seurat, subset = percent.mt > 0 & percent.mt < 2)
+
+plot1 <- FeatureScatter(seurat, feature1 = "nCount_RNA", feature2 = "percent.mt")
+plot2 <- FeatureScatter(seurat, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+plot1 + plot2
+
+levels(as.factor(seurat@meta.data$characteristics..therapy))
+levels(as.factor(seurat@meta.data$characteristics..response))
+
+# anti-CTLA4+PD1
+
+seurat <- subset(seurat, subset = characteristics..therapy == "anti-CTLA4+PD1")
+
+seurat <- NormalizeData(seurat, normalization.method = "LogNormalize", scale.factor = 10000)
+seurat <- FindVariableFeatures(seurat, selection.method = "vst", verbose = T)
+seurat_genes <- rownames(seurat)
+seurat <- ScaleData(seurat, features = seurat_genes)
+
+seurat <- RunPCA(seurat, features = VariableFeatures(object = seurat))
+
+ElbowPlot(seurat)
+
+seurat <- FindNeighbors(seurat, dims = 1:10)
+seurat <- FindClusters(seurat, resolution = 1.2)
+seurat <- RunUMAP(seurat, dims = 1:10)
+
+#DimPlot(seurat, reduction = "umap", group.by = "cellSubType")
+
+#saveRDS(object = seurat, file = "SKCM_Carmona_object.rds", refhook = NULL)
+
+ref <- load.reference.map()
+
+#SKCM <- readRDS("SKCM_Carmona/SKCM_Carmona_object.rds", refhook = NULL)
+
+SKCM = seurat
+
+summary(as.factor(SKCM@meta.data$characteristics..therapy))
+summary(as.factor(SKCM@meta.data$characteristics..response))
+
+#summary(as.factor(SKCM@meta.data$cellSubType))
+
+SKCM <- cellstate.predict(ref = ref, query = SKCM)
+summary(as.factor(SKCM@meta.data$functional.cluster))
+
+cd8_SKCM <- c("CD8_EarlyActiv", "CD8_EffectorMemory", "CD8_NaiveLike", "CD8_Tex", "CD8_Tpex")
+
+SKCM <- subset(SKCM, subset = functional.cluster %in% cd8_SKCM)
+summary(as.factor(SKCM@meta.data$functional.cluster))
+
+SKCM$Study <- "SKCM"
+
+# Gene signatures
+
+exp.mat <- SKCM@assays[["RNA"]]@counts
+
+signatures <- list(UPS = c("PSMB2", "PSMC3", "RBX1"),
+                   PROTEASOME = c("PSMA1", "PSMA2", "PSMA3", "PSMA4", "PSMA5", "PSMA6", "PSMA7", "PSMB1", "PSMB2", "PSMB3", "PSMB4", "PSMB5", "PSMB6", "PSMB7", "PSMC1", "PSMC2", "PSMC3", "PSMC4", "PSMC5", "PSMC6", "PSMD1", "PSMD2", "PSMD3", "PSMD4", "PSMD6", "PSMD7", "PSMD8", "PSMD11", "PSMD12", "PSMD13", "PSMD14"),
+                   HYPOXIC_EXHAUSTION = c("PSMC3", "PSMB2", "RBPJ", "RBX1", "PKM", "PGK1", "PSMB8", "ENO1", "LDHA", "CHCHD2"),
+                   CHAPERONAS = c("PSMG1", "PSMG2", "PSMG3", "PSMG4", "POMP", "PSMD9", "PSMD5", "PAAF1"),
+                   TF = c("NRF1", "NFE2L1"),
+                   EXHAUSTION = c("LAG3", "XCL1", "CRTAM", "IFNG", "CCL4", "PDCD1", "DUSP4", "ZEB2", "NR4A2", "SLA", "TIGIT", "TNFRSF9", "TOX", "LYST", "TNFSF4", "CCL3", "RAB27A", "CD70", "PLSCR1", "CXCL13", "HAVCR2", "CTSD", "ID2", "CD63", "RBPJ", "FAM3C", "CSF1", "ENTPD1"),
+                   EFFECTOR_MEMORY = c("GZMK", "NKG7", "GZMB", "PRF1", "ABI3", "FASLG", "C12orf75", "EOMES", "CHST12", "CCR5", "HCST", "HOPX", "SLAMF7", "CXCR3", "OASL", "F2R", "CXCR6"),
+                   NAIVE = c("CCR7", "IL7R", "SELL", "TCF7", "TXK", "S1PR1", "LEF1", "SATB1"),
+                   EARLY_ACTIVATED = c("FOS", "CD69", "ZFP36", "FOSB", "CCL5", "GZMM", "DUSP2", "LYAR", "SAMD3", "CXCR4", "CTSW", "CD8A", "ANXA1", "KLRG1", "CD8B", "AOAH", "TAGAP", "KLRD1", "IER2", "GZMA", "CST7", "ITM2C", "PARP8", "BTG2")
+)
+
+u.scores <- ScoreSignatures_UCell(exp.mat, features = signatures)
+u.scores[1:8, 1:7]
+
+SKCM <- AddMetaData(SKCM, metadata = as.data.frame(u.scores))
+
+signature.names <- paste0(names(signatures), "_UCell")
+
+DimPlot(SKCM, reduction = "umap", group.by = "functional.cluster") + 
+  DimPlot(SKCM, reduction = "umap", group.by = "characteristics..response")
+
+#saveRDS(object = SKCM, file= "ER+_CTLs.rds", refhook = NULL)
+#readRDS(file = "ER+_CTLs.rds", refhook = NULL)
+
+FeaturePlot(SKCM, reduction = "umap", features = signature.names, ncol = 4, order = T, cols = c("black", "red"))
+
+anti_CTLA4_PD1_Tn <- subset(SKCM, subset = functional.cluster == "CD8_NaiveLike")
+anti_CTLA4_PD1_Tn_UPS <- anti_CTLA4_PD1_Tn$UPS_UCell
+write.csv(anti_CTLA4_PD1_Tn_UPS, "anti-CTLA4_PD1_Tn_UPS.csv", sep = ",", dec= ".")
+
+anti_CTLA4_PD1_Tea <- subset(SKCM, subset = functional.cluster == "CD8_EarlyActiv")
+anti_CTLA4_PD1_Tea_UPS <- anti_CTLA4_PD1_Tea$UPS_UCell
+write.csv(anti_CTLA4_PD1_Tea_UPS, "anti-CTLA4_PD1_Tea_UPS.csv", sep = ",", dec= ".")
+
+anti_CTLA4_PD1_Tem <- subset(SKCM, subset = functional.cluster == "CD8_EffectorMemory")
+anti_CTLA4_PD1_Tem_UPS <- anti_CTLA4_PD1_Tem$UPS_UCell
+write.csv(anti_CTLA4_PD1_Tem_UPS, "anti-CTLA4_PD1_Tem_UPS.csv", sep = ",", dec= ".")
+
+anti_CTLA4_PD1_Tpex <- subset(SKCM, subset = functional.cluster == "CD8_Tpex")
+anti_CTLA4_PD1_Tpex_UPS <- anti_CTLA4_PD1_Tpex$UPS_UCell
+write.csv(anti_CTLA4_PD1_Tpex_UPS, "anti-CTLA4_PD1_Tpex_UPS.csv", sep = ",", dec= ".")
+
+anti_CTLA4_PD1_Tex <- subset(SKCM, subset = functional.cluster == "CD8_Tex")
+anti_CTLA4_PD1_Tex_UPS <- anti_CTLA4_PD1_Tex$UPS_UCell
+write.csv(anti_CTLA4_PD1_Tex_UPS, "anti-CTLA4_PD1_Tex_UPS.csv", sep = ",", dec= ".")
+
+##########################################
+######### SKCM anti-PD1 (Figure) #########
+##########################################
+
+# En el terminal, conectado desde un cable de red en bioGUNE:
+
+# ssh -X -p 22897 eprieto@hd04.cicbiogune.int
+# Navegar hasta la carpeta de interes:
+# cic-R4.0.5
+# R
+# library(Seurat)
+
+# Tutorial: https://carmonalab.github.io/ProjecTILs_CaseStudies/SadeFeldman_ortho.html#cb1-1
+
+exp.mat <- read.delim("GSE120575_Sade_Feldman_melanoma_single_cells_TPM_GEO.txt", header = F, sep = "\t")
+
+genes <- exp.mat[c(-1, -2), 1]
+cells <- as.vector(t(exp.mat[1, 2:16292]))
+samples <- as.factor(t(exp.mat[2, 2:16292]))
+
+exp.mat <- exp.mat[c(-1, -2), 2:16292]
+colnames(exp.mat) <- cells
+rownames(exp.mat) <- genes
+
+meta <- read.csv("GSE120575_patient_ID_single_cells.csv", sep = ";") # Lo he abierto y guardado como .csv antes, quitando todo lo inservible.
+rownames(meta) <- meta$title
+meta[, 1:7]
+
+# treat <- factor(ifelse(grepl("Post", samples), "Post", "Pre"))
+# response <- factor(meta$characteristics..response)
+# therapy <- factor(meta$characteristics..therapy)
+
+seurat <- CreateSeuratObject(counts = exp.mat, project = "SadeFeldman", meta.data = meta, min.cells = 10)
+#saveRDS(seurat, "SKCM_Carmona_object.rds", refhook= NULL)
+
+seurat[["percent.mt"]] <- PercentageFeatureSet(seurat, pattern = "^MT")
+
+VlnPlot(seurat, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+seurat <- subset(seurat, subset = nFeature_RNA > 0 & nFeature_RNA < 3000)
+seurat <- subset(seurat, subset = nCount_RNA > 10000 & nCount_RNA < 20000)
+seurat <- subset(seurat, subset = percent.mt > 0 & percent.mt < 2)
+
+plot1 <- FeatureScatter(seurat, feature1 = "nCount_RNA", feature2 = "percent.mt")
+plot2 <- FeatureScatter(seurat, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+plot1 + plot2
+
+levels(as.factor(seurat@meta.data$characteristics..therapy))
+levels(as.factor(seurat@meta.data$characteristics..response))
+
+# anti-PD1
+
+seurat <- subset(seurat, subset = characteristics..therapy == "anti-PD1")
+
+seurat <- NormalizeData(seurat, normalization.method = "LogNormalize", scale.factor = 10000)
+seurat <- FindVariableFeatures(seurat, selection.method = "vst", verbose = T)
+seurat_genes <- rownames(seurat)
+seurat <- ScaleData(seurat, features = seurat_genes)
+
+seurat <- RunPCA(seurat, features = VariableFeatures(object = seurat))
+
+ElbowPlot(seurat)
+
+seurat <- FindNeighbors(seurat, dims = 1:10)
+seurat <- FindClusters(seurat, resolution = 1.2)
+seurat <- RunUMAP(seurat, dims = 1:10)
+
+#DimPlot(seurat, reduction = "umap", group.by = "cellSubType")
+
+saveRDS(object = seurat, file = "SKCM_anti-PD1.rds", refhook = NULL)
+
+ref <- load.reference.map()
+
+SKCM <- readRDS(file= "SKCM_anti-PD1.rds", refhook = NULL)
+
+#SKCM <- readRDS("SKCM_Carmona/SKCM_Carmona_object.rds", refhook = NULL)
+
+SKCM = seurat
+
+summary(as.factor(SKCM@meta.data$characteristics..therapy))
+summary(as.factor(SKCM@meta.data$characteristics..response))
+
+#summary(as.factor(SKCM@meta.data$cellSubType))
+
+SKCM <- cellstate.predict(ref = ref, query = SKCM)
+summary(as.factor(SKCM@meta.data$functional.cluster))
+
+cd8_SKCM <- c("CD8_EarlyActiv", "CD8_EffectorMemory", "CD8_NaiveLike", "CD8_Tex", "CD8_Tpex")
+
+SKCM <- subset(SKCM, subset = functional.cluster %in% cd8_SKCM)
+summary(as.factor(SKCM@meta.data$functional.cluster))
+
+SKCM$Study <- "SKCM"
+
+# Gene signatures
+
+exp.mat <- SKCM@assays[["RNA"]]@counts
+
+signatures <- list(UPS = c("PSMB2", "PSMC3", "RBX1"),
+                   PROTEASOME = c("PSMA1", "PSMA2", "PSMA3", "PSMA4", "PSMA5", "PSMA6", "PSMA7", "PSMB1", "PSMB2", "PSMB3", "PSMB4", "PSMB5", "PSMB6", "PSMB7", "PSMC1", "PSMC2", "PSMC3", "PSMC4", "PSMC5", "PSMC6", "PSMD1", "PSMD2", "PSMD3", "PSMD4", "PSMD6", "PSMD7", "PSMD8", "PSMD11", "PSMD12", "PSMD13", "PSMD14"),
+                   HYPOXIC_EXHAUSTION = c("PSMC3", "PSMB2", "RBPJ", "RBX1", "PKM", "PGK1", "PSMB8", "ENO1", "LDHA", "CHCHD2"),
+                   CHAPERONAS = c("PSMG1", "PSMG2", "PSMG3", "PSMG4", "POMP", "PSMD9", "PSMD5", "PAAF1"),
+                   TF = c("NRF1", "NFE2L1"),
+                   EXHAUSTION = c("LAG3", "XCL1", "CRTAM", "IFNG", "CCL4", "PDCD1", "DUSP4", "ZEB2", "NR4A2", "SLA", "TIGIT", "TNFRSF9", "TOX", "LYST", "TNFSF4", "CCL3", "RAB27A", "CD70", "PLSCR1", "CXCL13", "HAVCR2", "CTSD", "ID2", "CD63", "RBPJ", "FAM3C", "CSF1", "ENTPD1"),
+                   EFFECTOR_MEMORY = c("GZMK", "NKG7", "GZMB", "PRF1", "ABI3", "FASLG", "C12orf75", "EOMES", "CHST12", "CCR5", "HCST", "HOPX", "SLAMF7", "CXCR3", "OASL", "F2R", "CXCR6"),
+                   NAIVE = c("CCR7", "IL7R", "SELL", "TCF7", "TXK", "S1PR1", "LEF1", "SATB1"),
+                   EARLY_ACTIVATED = c("FOS", "CD69", "ZFP36", "FOSB", "CCL5", "GZMM", "DUSP2", "LYAR", "SAMD3", "CXCR4", "CTSW", "CD8A", "ANXA1", "KLRG1", "CD8B", "AOAH", "TAGAP", "KLRD1", "IER2", "GZMA", "CST7", "ITM2C", "PARP8", "BTG2")
+)
+
+u.scores <- ScoreSignatures_UCell(exp.mat, features = signatures)
+u.scores[1:8, 1:7]
+
+SKCM <- AddMetaData(SKCM, metadata = as.data.frame(u.scores))
+
+signature.names <- paste0(names(signatures), "_UCell")
+
+DimPlot(SKCM, reduction = "umap", group.by = "functional.cluster") + 
+  DimPlot(SKCM, reduction = "umap", group.by = "characteristics..response")
+
+#saveRDS(object = SKCM, file= "ER+_CTLs.rds", refhook = NULL)
+#readRDS(file = "ER+_CTLs.rds", refhook = NULL)
+
+SKCM <- subset(SKCM, subset = characteristics..response == "Responder")
+
+FeaturePlot(SKCM, reduction = "umap", features = signature.names, ncol = 4, order = T, cols = c("black", "red"))
+
+anti_PD1_Tn <- subset(SKCM, subset = functional.cluster == "CD8_NaiveLike")
+anti_PD1_Tn_UPS <- anti_PD1_Tn$UPS_UCell
+write.csv(anti_PD1_Tn_UPS, "anti_PD1_Tn_UPS.csv", sep = ",", dec= ".")
+
+anti_PD1_Tea <- subset(SKCM, subset = functional.cluster == "CD8_EarlyActiv")
+anti_PD1_Tea_UPS <- anti_PD1_Tea$UPS_UCell
+write.csv(anti_PD1_Tea_UPS, "anti_PD1_Tea_UPS.csv", sep = ",", dec= ".")
+
+anti_PD1_Tem <- subset(SKCM, subset = functional.cluster == "CD8_EffectorMemory")
+anti_PD1_Tem_UPS <- anti_PD1_Tem$UPS_UCell
+write.csv(anti_PD1_Tem_UPS, "anti_PD1_Tem_UPS.csv", sep = ",", dec= ".")
+
+anti_PD1_Tpex <- subset(SKCM, subset = functional.cluster == "CD8_Tpex")
+anti_PD1_Tpex_UPS <- anti_PD1_Tpex$UPS_UCell
+write.csv(anti_PD1_Tpex_UPS, "anti_PD1_Tpex_UPS.csv", sep = ",", dec= ".")
+
+anti_PD1_Tex <- subset(SKCM, subset = functional.cluster == "CD8_Tex")
+anti_PD1_Tex_UPS <- anti_PD1_Tex$UPS_UCell
+write.csv(anti_PD1_Tex_UPS, "anti_PD1_Tex_UPS.csv", sep = ",", dec= ".")
+
+write.csv(SKCM$PROTEASOME_UCell, "cor_PROTEASOME.csv", sep = ",", dec = ".")
+write.csv(SKCM$EXHAUSTION_UCell, "cor_EXH.csv", sep = ",", dec = ".")
+
+###################################
+######### SKCM anti-CTLA4 #########
+###################################
+
+# En el terminal, conectado desde un cable de red en bioGUNE:
+
+# ssh -X -p 22897 eprieto@hd04.cicbiogune.int
+# Navegar hasta la carpeta de interes:
+# cic-R4.0.5
+# R
+# library(Seurat)
+
+# Tutorial: https://carmonalab.github.io/ProjecTILs_CaseStudies/SadeFeldman_ortho.html#cb1-1
+
+exp.mat <- read.delim("GSE120575_Sade_Feldman_melanoma_single_cells_TPM_GEO.txt", header = F, sep = "\t")
+
+genes <- exp.mat[c(-1, -2), 1]
+cells <- as.vector(t(exp.mat[1, 2:16292]))
+samples <- as.factor(t(exp.mat[2, 2:16292]))
+
+exp.mat <- exp.mat[c(-1, -2), 2:16292]
+colnames(exp.mat) <- cells
+rownames(exp.mat) <- genes
+
+meta <- read.csv("GSE120575_patient_ID_single_cells.csv", sep = ";") # Lo he abierto y guardado como .csv antes, quitando todo lo inservible.
+rownames(meta) <- meta$title
+meta[, 1:7]
+
+# treat <- factor(ifelse(grepl("Post", samples), "Post", "Pre"))
+# response <- factor(meta$characteristics..response)
+# therapy <- factor(meta$characteristics..therapy)
+
+seurat <- CreateSeuratObject(counts = exp.mat, project = "SadeFeldman", meta.data = meta, min.cells = 10)
+#saveRDS(seurat, "SKCM_Carmona_object.rds", refhook= NULL)
+
+seurat[["percent.mt"]] <- PercentageFeatureSet(seurat, pattern = "^MT")
+
+VlnPlot(seurat, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+seurat <- subset(seurat, subset = nFeature_RNA > 0 & nFeature_RNA < 3000)
+seurat <- subset(seurat, subset = nCount_RNA > 10000 & nCount_RNA < 20000)
+seurat <- subset(seurat, subset = percent.mt > 0 & percent.mt < 2)
+
+plot1 <- FeatureScatter(seurat, feature1 = "nCount_RNA", feature2 = "percent.mt")
+plot2 <- FeatureScatter(seurat, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+plot1 + plot2
+
+levels(as.factor(seurat@meta.data$characteristics..therapy))
+levels(as.factor(seurat@meta.data$characteristics..response))
+
+# anti-CTLA4
+
+seurat <- subset(seurat, subset = characteristics..therapy == "anti-CTLA4")
+
+seurat <- NormalizeData(seurat, normalization.method = "LogNormalize", scale.factor = 10000)
+seurat <- FindVariableFeatures(seurat, selection.method = "vst", verbose = T)
+seurat_genes <- rownames(seurat)
+seurat <- ScaleData(seurat, features = seurat_genes)
+
+seurat <- RunPCA(seurat, features = VariableFeatures(object = seurat))
+
+ElbowPlot(seurat)
+
+seurat <- FindNeighbors(seurat, dims = 1:10)
+seurat <- FindClusters(seurat, resolution = 1.2)
+seurat <- RunUMAP(seurat, dims = 1:10)
+
+#DimPlot(seurat, reduction = "umap", group.by = "cellSubType")
+
+#saveRDS(object = seurat, file = "SKCM_anti-CTLA4.rds", refhook = NULL)
+
+ref <- load.reference.map()
+
+#SKCM <- readRDS(file= "SKCM_anti-CTLA4.rds", refhook = NULL)
+
+#SKCM <- readRDS("SKCM_Carmona/SKCM_Carmona_object.rds", refhook = NULL)
+
+SKCM = seurat
+
+summary(as.factor(SKCM@meta.data$characteristics..therapy))
+summary(as.factor(SKCM@meta.data$characteristics..response))
+
+#summary(as.factor(SKCM@meta.data$cellSubType))
+
+SKCM <- cellstate.predict(ref = ref, query = SKCM)
+summary(as.factor(SKCM@meta.data$functional.cluster))
+
+cd8_SKCM <- c("CD8_EarlyActiv", "CD8_EffectorMemory", "CD8_NaiveLike", "CD8_Tex", "CD8_Tpex")
+
+SKCM <- subset(SKCM, subset = functional.cluster %in% cd8_SKCM)
+summary(as.factor(SKCM@meta.data$functional.cluster))
+
+SKCM$Study <- "SKCM"
+
+# Gene signatures
+
+exp.mat <- SKCM@assays[["RNA"]]@counts
+
+signatures <- list(UPS = c("PSMB2", "PSMC3", "RBX1"),
+                   PROTEASOME = c("PSMA1", "PSMA2", "PSMA3", "PSMA4", "PSMA5", "PSMA6", "PSMA7", "PSMB1", "PSMB2", "PSMB3", "PSMB4", "PSMB5", "PSMB6", "PSMB7", "PSMC1", "PSMC2", "PSMC3", "PSMC4", "PSMC5", "PSMC6", "PSMD1", "PSMD2", "PSMD3", "PSMD4", "PSMD6", "PSMD7", "PSMD8", "PSMD11", "PSMD12", "PSMD13", "PSMD14"),
+                   HYPOXIC_EXHAUSTION = c("PSMC3", "PSMB2", "RBPJ", "RBX1", "PKM", "PGK1", "PSMB8", "ENO1", "LDHA", "CHCHD2"),
+                   CHAPERONAS = c("PSMG1", "PSMG2", "PSMG3", "PSMG4", "POMP", "PSMD9", "PSMD5", "PAAF1"),
+                   TF = c("NRF1", "NFE2L1"),
+                   EXHAUSTION = c("LAG3", "XCL1", "CRTAM", "IFNG", "CCL4", "PDCD1", "DUSP4", "ZEB2", "NR4A2", "SLA", "TIGIT", "TNFRSF9", "TOX", "LYST", "TNFSF4", "CCL3", "RAB27A", "CD70", "PLSCR1", "CXCL13", "HAVCR2", "CTSD", "ID2", "CD63", "RBPJ", "FAM3C", "CSF1", "ENTPD1"),
+                   EFFECTOR_MEMORY = c("GZMK", "NKG7", "GZMB", "PRF1", "ABI3", "FASLG", "C12orf75", "EOMES", "CHST12", "CCR5", "HCST", "HOPX", "SLAMF7", "CXCR3", "OASL", "F2R", "CXCR6"),
+                   NAIVE = c("CCR7", "IL7R", "SELL", "TCF7", "TXK", "S1PR1", "LEF1", "SATB1"),
+                   EARLY_ACTIVATED = c("FOS", "CD69", "ZFP36", "FOSB", "CCL5", "GZMM", "DUSP2", "LYAR", "SAMD3", "CXCR4", "CTSW", "CD8A", "ANXA1", "KLRG1", "CD8B", "AOAH", "TAGAP", "KLRD1", "IER2", "GZMA", "CST7", "ITM2C", "PARP8", "BTG2")
+)
+
+u.scores <- ScoreSignatures_UCell(exp.mat, features = signatures)
+u.scores[1:8, 1:7]
+
+SKCM <- AddMetaData(SKCM, metadata = as.data.frame(u.scores))
+
+signature.names <- paste0(names(signatures), "_UCell")
+
+DimPlot(SKCM, reduction = "umap", group.by = "functional.cluster", pt.size = 1.25) + 
+  DimPlot(SKCM, reduction = "umap", group.by = "characteristics..response")
+
+#saveRDS(object = SKCM, file= "ER+_CTLs.rds", refhook = NULL)
+#readRDS(file = "ER+_CTLs.rds", refhook = NULL)
+
+FeaturePlot(SKCM, reduction = "umap", features = signature.names, ncol = 4, order = T, cols = c("black", "red"))
+
+anti_CTLA4_Tn <- subset(SKCM, subset = functional.cluster == "CD8_NaiveLike")
+anti_CTLA4_Tn_UPS <- anti_CTLA4_Tn$UPS_UCell
+write.csv(anti_CTLA4_Tn_UPS, "anti_CTLA4_Tn_UPS.csv", sep = ",", dec= ".")
+
+anti_CTLA4_Tea <- subset(SKCM, subset = functional.cluster == "CD8_EarlyActiv")
+anti_CTLA4_Tea_UPS <- anti_CTLA4_Tea$UPS_UCell
+write.csv(anti_CTLA4_Tea_UPS, "anti_CTLA4_Tea_UPS.csv", sep = ",", dec= ".")
+
+anti_CTLA4_Tem <- subset(SKCM, subset = functional.cluster == "CD8_EffectorMemory")
+anti_CTLA4_Tem_UPS <- anti_CTLA4_Tem$UPS_UCell
+write.csv(anti_CTLA4_Tem_UPS, "anti_CTLA4_Tem_UPS.csv", sep = ",", dec= ".")
+
+anti_CTLA4_Tpex <- subset(SKCM, subset = functional.cluster == "CD8_Tpex")
+anti_CTLA4_Tpex_UPS <- anti_CTLA4_Tpex$UPS_UCell
+write.csv(anti_CTLA4_Tpex_UPS, "anti_CTLA4_Tpex_UPS.csv", sep = ",", dec= ".")
+
+anti_CTLA4_Tex <- subset(SKCM, subset = functional.cluster == "CD8_Tex")
+anti_CTLA4_Tex_UPS <- anti_CTLA4_Tex$UPS_UCell
+write.csv(anti_CTLA4_Tex_UPS, "anti_CTLA4_Tex_UPS.csv", sep = ",", dec= ".")
+
+write.csv(SKCM$PROTEASOME_UCell, "cor_CTLA4_PROTEASOME.csv", sep = ",", dec = ".")
+write.csv(SKCM$EXHAUSTION_UCell, "cor_CTLA4_EXH.csv", sep = ",", dec = ".")
+
+cor(SKCM$UPS_UCell, SKCM$EXHAUSTION_UCell, method= "pearson")
+
+
+####################################################
+######### HCC (hay 3 células exhaustas...) #########
+####################################################
+
+matrix_dir = "/home/CICBIOGUNE/eprieto/R/HCC/"
+
+barcode.path <- paste0(matrix_dir, "barcodes.tsv.gz")
+features.path <- paste0(matrix_dir, "features.tsv.gz")
+metadata.path <- paste0(matrix_dir, "metadata.tsv.gz")
+matrix.path <- paste0(matrix_dir, "matrix.mtx.gz")
+
+mat <- readMM(file = matrix.path)
+
+feature.names = read.delim(features.path,
+                           header = TRUE,
+                           stringsAsFactors = FALSE,
+                           row.names = 1)
+
+barcode.names = read.delim(barcode.path,
+                           header = FALSE,
+                           stringsAsFactors = FALSE)
+
+metadata = read.delim(metadata.path,
+                      header = TRUE,
+                      stringsAsFactors = FALSE,
+                      row.names = 1)
+
+colnames(mat) = barcode.names$V1
+rownames(mat) = feature.names$SYMBOL
+
+HCC <- CreateSeuratObject(counts= mat,  min.cells = 3, min.features = 300, meta.data = metadata)
+
+summary(as.factor(HCC$Tissue))
+HCC <- subset(HCC, subset = Tissue == "Tumor")
+
+# QC analysis
+
+HCC[["percent.mt"]] <- PercentageFeatureSet(HCC, pattern = "^MT-")
+
+VlnPlot(HCC, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+HCC <- subset(HCC, subset = nFeature_RNA > 400 & nFeature_RNA < 3000)
+HCC <- subset(HCC, subset = nCount_RNA > 200 & nCount_RNA < 7500)
+HCC <- subset(HCC, subset = percent.mt > 0 & percent.mt < 5)
+
+#plot1 <- FeatureScatter(HCC, feature1 = "nCount_RNA", feature2 = "percent.mt")
+#plot2 <- FeatureScatter(HCC, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+#plot1 + plot2
+
+HCC <- NormalizeData(HCC, normalization.method = "LogNormalize", scale.factor = 10000)
+HCC <- FindVariableFeatures(HCC, selection.method = "vst", verbose = T)
+HCC_genes <- rownames(HCC)
+HCC <- ScaleData(HCC, features = HCC_genes)
+
+HCC <- RunPCA(HCC, features = VariableFeatures(object = HCC))
+
+ElbowPlot(HCC)
+
+HCC <- FindNeighbors(HCC, dims = 1:10)
+HCC <- FindClusters(HCC, resolution = 1.2)
+HCC <- RunUMAP(HCC, dims = 1:10)
+
+#saveRDS(HCC, "HCC_object.rds", refhook= NULL)
+
+#Extraer los CTLs de HCC
+
+ref <- load.reference.map()
+
+HCC <- readRDS("HCC/HCC_object.rds", refhook = NULL)
+summary(as.factor(HCC@meta.data$celltype_global))
+
+HCC <- subset(HCC, subset = celltype_global == "Lymphoid-T")
+
+HCC <- cellstate.predict(ref = ref, query = HCC)
+summary(as.factor(HCC@meta.data$functional.cluster))
+
+cd8_HCC <- c("CD8_EarlyActiv", "CD8_EffectorMemory", "CD8_NaiveLike", "CD8_Tex", "CD8_Tpex")
+
+HCC <- subset(HCC, subset = functional.cluster %in% cd8_HCC)
+summary(as.factor(HCC@meta.data$functional.cluster))
+
+HCC$Study <- "HCC"
+
+#saveRDS(object = HCC, file= "HCC_CTLs.rds", refhook = NULL)
+
+# Gene signatures
+
+exp.mat <- HCC@assays[["RNA"]]@counts
+
+signatures <- list(UPS = c("PSMB2", "PSMC3", "RBX1"),
+                   PROTEASOME = c("PSMA1", "PSMA2", "PSMA3", "PSMA4", "PSMA5", "PSMA6", "PSMA7", "PSMB1", "PSMB2", "PSMB3", "PSMB4", "PSMB5", "PSMB6", "PSMB7", "PSMC1", "PSMC2", "PSMC3", "PSMC4", "PSMC5", "PSMC6", "PSMD1", "PSMD2", "PSMD3", "PSMD4", "PSMD6", "PSMD7", "PSMD8", "PSMD11", "PSMD12", "PSMD13", "PSMD14"),
+                   HYPOXIC_EXHAUSTION = c("PSMC3", "PSMB2", "RBPJ", "RBX1", "PKM", "PGK1", "PSMB8", "ENO1", "LDHA", "CHCHD2"),
+                   CHAPERONAS = c("PSMG1", "PSMG2", "PSMG3", "PSMG4", "POMP", "PSMD9", "PSMD5", "PAAF1"),
+                   TF = c("NRF1", "NFE2L1"),
+                   EXHAUSTION = c("LAG3", "XCL1", "CRTAM", "IFNG", "CCL4", "PDCD1", "DUSP4", "ZEB2", "NR4A2", "SLA", "TIGIT", "TNFRSF9", "TOX", "LYST", "TNFSF4", "CCL3", "RAB27A", "CD70", "PLSCR1", "CXCL13", "HAVCR2", "CTSD", "ID2", "CD63", "RBPJ", "FAM3C", "CSF1", "ENTPD1"),
+                   EFFECTOR_MEMORY = c("GZMK", "NKG7", "GZMB", "PRF1", "ABI3", "FASLG", "C12orf75", "EOMES", "CHST12", "CCR5", "HCST", "HOPX", "SLAMF7", "CXCR3", "OASL", "F2R", "CXCR6"),
+                   NAIVE = c("CCR7", "IL7R", "SELL", "TCF7", "TXK", "S1PR1", "LEF1", "SATB1"),
+                   EARLY_ACTIVATED = c("FOS", "CD69", "ZFP36", "FOSB", "CCL5", "GZMM", "DUSP2", "LYAR", "SAMD3", "CXCR4", "CTSW", "CD8A", "ANXA1", "KLRG1", "CD8B", "AOAH", "TAGAP", "KLRD1", "IER2", "GZMA", "CST7", "ITM2C", "PARP8", "BTG2")
+)
+
+u.scores <- ScoreSignatures_UCell(exp.mat, features = signatures)
+
+HCC <- AddMetaData(HCC, metadata = as.data.frame(u.scores))
+
+signature.names <- paste0(names(signatures), "_UCell")
+
+#saveRDS(object = BRCA, file= "HER2+_CTLs.rds", refhook = NULL)
+#readRDS(file = "HER2+_CTLs.rds", refhook = NULL)
+
+DimPlot(HCC, reduction = "umap", group.by = "functional.cluster")
+
+FeaturePlot(HCC, reduction = "umap", features = signature.names, ncol = 4, order = T, cols = c("black", "red"))
+
+ER_Tn <- subset(HCC, subset = functional.cluster == "CD8_NaiveLike")
+ER_Tn_PROTEASOME <- ER_Tn$PROTEASOME_UCell
+write.csv(ER_Tn_PROTEASOME, "ER_Tn_PROTEASOME.csv", sep = ",", dec= ".")
+
+ER_Tea <- subset(HCC, subset = functional.cluster == "CD8_EarlyActiv")
+ER_Tea_PROTEASOME <- ER_Tea$PROTEASOME_UCell
+write.csv(ER_Tea_PROTEASOME, "ER_Tea_PROTEASOME.csv", sep = ",", dec= ".")
+
+ER_Tem <- subset(HCC, subset = functional.cluster == "CD8_EffectorMemory")
+ER_Tem_PROTEASOME <- ER_Tem$PROTEASOME_UCell
+write.csv(ER_Tem_PROTEASOME, "ER_Tem_PROTEASOME.csv", sep = ",", dec= ".")
+
+ER_Tpex <- subset(HCC, subset = functional.cluster == "CD8_Tpex")
+ER_Tpex_PROTEASOME <- ER_Tpex$PROTEASOME_UCell
+write.csv(ER_Tpex_PROTEASOME, "ER_Tpex_PROTEASOME.csv", sep = ",", dec= ".")
+
+ER_Tex <- subset(HCC, subset = functional.cluster == "CD8_Tex")
+ER_Tex_PROTEASOME <- ER_Tex$PROTEASOME_UCell
+write.csv(ER_Tex_PROTEASOME, "ER_Tex_PROTEASOME.csv", sep = ",", dec= ".")
+
+#Correlacion entre proteasome y exhaustion
+
+row.names = colnames(HCC)
+functional.cluster = HCC@meta.data$functional.cluster
+proteasome = HCC@meta.data$PROTEASOME_UCell
+exhaustion = HCC@meta.data$EXHAUSTION_UCell
+
+cor.table = as.data.frame(row.names = row.names, x= functional.cluster)
+cor.table$proteasome = proteasome
+cor.table$exhaustion = exhaustion
+
+write.csv(cor.table, "correlation table.csv", sep = ",", dec = ".")
+
+######################
+######### OV #########
+######################
+
+# cd39-01-s1
+
+data_dir <- "C:/Users/eprieto/Desktop/SINGLE_CELL/OV/cd39-01-s1/"
+expression_matrix <- Read10X(data.dir = data_dir)
+seurat_object = CreateSeuratObject(counts = expression_matrix)
+S1 <- seurat_object
+S1[["percent.mt"]] <- PercentageFeatureSet(S1, pattern = "^MT-")
+VlnPlot(S1, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+S1 <- subset(S1, subset = nFeature_RNA > 200 & nFeature_RNA < 3000)
+S1 <- subset(S1, subset = nCount_RNA > 200 & nCount_RNA < 7500)
+S1 <- subset(S1, subset = percent.mt > 0 & percent.mt < 5)
+# plot1 <- FeatureScatter(S1, feature1 = "nCount_RNA", feature2 = "percent.mt")
+# plot2 <- FeatureScatter(S1, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+# plot1 + plot2
+S1 <- NormalizeData(S1, normalization.method = "LogNormalize", scale.factor = 10000)
+S1$sample <- "cd39-01-S1"
+S1$group <- "1"
+S1 <- FindVariableFeatures(S1, selection.method = "vst", verbose = T)
+seurat_genes <- rownames(S1)
+S1 <- ScaleData(S1, features = seurat_genes)
+S1 <- RunPCA(S1, features = VariableFeatures(object = S1))
+ElbowPlot(S1)
+S1 <- FindNeighbors(S1, dims = 1:20)
+S1 <- FindClusters(S1, resolution = 2.0)
+S1 <- RunUMAP(S1, dims = 1:20)
+
+# cd39-01-s2
+
+data_dir <- "C:/Users/eprieto/Desktop/SINGLE_CELL/OV/cd39-01-s2/"
+expression_matrix <- Read10X(data.dir = data_dir)
+seurat_object = CreateSeuratObject(counts = expression_matrix)
+S2 <- seurat_object
+S2[["percent.mt"]] <- PercentageFeatureSet(S2, pattern = "^MT-")
+S2 <- subset(S2, subset = nFeature_RNA > 200 & nFeature_RNA < 3000)
+S2 <- subset(S2, subset = nCount_RNA > 200 & nCount_RNA < 7500)
+S2 <- subset(S2, subset = percent.mt > 0 & percent.mt < 5)
+S2 <- NormalizeData(S2, normalization.method = "LogNormalize", scale.factor = 10000)
+S2$sample <- "cd39-01-S2"
+S2$group <- "1"
+S2 <- FindVariableFeatures(S2, selection.method = "vst", verbose = T)
+seurat_genes <- rownames(S2)
+S2 <- ScaleData(S2, features = seurat_genes)
+S2 <- RunPCA(S2, features = VariableFeatures(object = S2))
+ElbowPlot(S2)
+S2 <- FindNeighbors(S2, dims = 1:20)
+S2 <- FindClusters(S2, resolution = 2.0)
+S2 <- RunUMAP(S2, dims = 1:20)
+
+# cd39-01-s3
+
+data_dir <- "C:/Users/eprieto/Desktop/SINGLE_CELL/OV/cd39-01-s3/"
+expression_matrix <- Read10X(data.dir = data_dir)
+seurat_object = CreateSeuratObject(counts = expression_matrix)
+S3 <- seurat_object
+S3[["percent.mt"]] <- PercentageFeatureSet(S3, pattern = "^MT-")
+S3 <- subset(S3, subset = nFeature_RNA > 200 & nFeature_RNA < 3000)
+S3 <- subset(S3, subset = nCount_RNA > 200 & nCount_RNA < 7500)
+S3 <- subset(S3, subset = percent.mt > 0 & percent.mt < 5)
+S3 <- NormalizeData(S3, normalization.method = "LogNormalize", scale.factor = 10000)
+S3$sample <- "cd39-01-S3"
+S3$group <- "1"
+S3 <- FindVariableFeatures(S3, selection.method = "vst", verbose = T)
+seurat_genes <- rownames(S3)
+S3 <- ScaleData(S3, features = seurat_genes)
+S3 <- RunPCA(S3, features = VariableFeatures(object = S3))
+ElbowPlot(S3)
+S3 <- FindNeighbors(S3, dims = 1:20)
+S3 <- FindClusters(S3, resolution = 2.0)
+S3 <- RunUMAP(S3, dims = 1:20)
+
+# cd39-01-s4
+
+data_dir <- "C:/Users/eprieto/Desktop/SINGLE_CELL/OV/cd39-01-s4/"
+expression_matrix <- Read10X(data.dir = data_dir)
+seurat_object = CreateSeuratObject(counts = expression_matrix)
+S4 <- seurat_object
+S4[["percent.mt"]] <- PercentageFeatureSet(S4, pattern = "^MT-")
+S4 <- subset(S4, subset = nFeature_RNA > 200 & nFeature_RNA < 3000)
+S4 <- subset(S4, subset = nCount_RNA > 200 & nCount_RNA < 7500)
+S4 <- subset(S4, subset = percent.mt > 0 & percent.mt < 5)
+S4 <- NormalizeData(S4, normalization.method = "LogNormalize", scale.factor = 10000)
+S4$sample <- "cd39-01-S4"
+S4$group <- "1"
+S4 <- FindVariableFeatures(S4, selection.method = "vst", verbose = T)
+seurat_genes <- rownames(S4)
+S4 <- ScaleData(S4, features = seurat_genes)
+S4 <- RunPCA(S4, features = VariableFeatures(object = S4))
+ElbowPlot(S4)
+S4 <- FindNeighbors(S4, dims = 1:20)
+S4 <- FindClusters(S4, resolution = 2.0)
+S4 <- RunUMAP(S4, dims = 1:20)
+
+# cd39-01-s5
+
+data_dir <- "C:/Users/eprieto/Desktop/SINGLE_CELL/OV/cd39-01-s5/"
+expression_matrix <- Read10X(data.dir = data_dir)
+seurat_object = CreateSeuratObject(counts = expression_matrix)
+S5 <- seurat_object
+S5[["percent.mt"]] <- PercentageFeatureSet(S5, pattern = "^MT-")
+S5 <- subset(S5, subset = nFeature_RNA > 200 & nFeature_RNA < 3000)
+S5 <- subset(S5, subset = nCount_RNA > 200 & nCount_RNA < 7500)
+S5 <- subset(S5, subset = percent.mt > 0 & percent.mt < 5)
+S5 <- NormalizeData(S5, normalization.method = "LogNormalize", scale.factor = 10000)
+S5$sample <- "cd39-01-S5"
+S5$group <- "1"
+S5 <- FindVariableFeatures(S5, selection.method = "vst", verbose = T)
+seurat_genes <- rownames(S5)
+S5 <- ScaleData(S5, features = seurat_genes)
+S5 <- RunPCA(S5, features = VariableFeatures(object = S5))
+ElbowPlot(S5)
+S5 <- FindNeighbors(S5, dims = 1:20)
+S5 <- FindClusters(S5, resolution = 2.0)
+S5 <- RunUMAP(S5, dims = 1:20)
+
+# cd39-01-s6
+
+data_dir <- "C:/Users/eprieto/Desktop/SINGLE_CELL/OV/cd39-01-s6/"
+expression_matrix <- Read10X(data.dir = data_dir)
+seurat_object = CreateSeuratObject(counts = expression_matrix)
+S6 <- seurat_object
+S6[["percent.mt"]] <- PercentageFeatureSet(S6, pattern = "^MT-")
+S6 <- subset(S6, subset = nFeature_RNA > 200 & nFeature_RNA < 3000)
+S6 <- subset(S6, subset = nCount_RNA > 200 & nCount_RNA < 7500)
+S6 <- subset(S6, subset = percent.mt > 0 & percent.mt < 5)
+S6 <- NormalizeData(S6, normalization.method = "LogNormalize", scale.factor = 10000)
+S6$sample <- "cd39-01-S6"
+S6$group <- "1"
+S6 <- FindVariableFeatures(S6, selection.method = "vst", verbose = T)
+seurat_genes <- rownames(S6)
+S6 <- ScaleData(S6, features = seurat_genes)
+S6 <- RunPCA(S6, features = VariableFeatures(object = S6))
+ElbowPlot(S6)
+S6 <- FindNeighbors(S6, dims = 1:20)
+S6 <- FindClusters(S6, resolution = 2.0)
+S6 <- RunUMAP(S6, dims = 1:20)
+
+# Tutorial: https://satijalab.org/seurat/articles/integration_introduction.html
+
+# Integrative analysis
+
+list <- lapply(X = c(S1, S2, S3, S4, S5, S6), FUN = function(x) {
+  x <- NormalizeData(x)
+  x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 3000)
+})
+
+features <- SelectIntegrationFeatures(object.list = list, nfeatures = 3000)
+
+anchors <- FindIntegrationAnchors(object.list = list, anchor.features = features)
+
+integrated <- IntegrateData(anchorset = anchors)
+
+DefaultAssay(integrated) <- "integrated"
+
+OV <- ScaleData(integrated, verbose = FALSE)
+OV <- RunPCA(OV, npcs = 20, verbose = FALSE)
+OV <- RunUMAP(OV, reduction = "pca", dims = 1:20)
+OV <- FindNeighbors(OV, reduction = "pca", dims = 1:20)
+OV <- FindClusters(OV, resolution = 2.0)
+
+saveRDS(object = OV, file = "OV_object.rds", refhook = NULL)
+
+# Extraer los CTLs de OV_integrado
+
+ref <- load.reference.map()
+
+OV <- readRDS("OV/OV_object.rds", refhook = NULL)
+DefaultAssay(OV) <- "integrated"
+
+OV <- subset(OV, subset = CD8A > 0)
+
+OV <- cellstate.predict(ref = ref, query = OV)
+levels(as.factor(OV@meta.data$functional.cluster))
+
+cd8_OV <- c("CD8_EarlyActiv", "CD8_EffectorMemory", "CD8_NaiveLike", "CD8_Tex", "CD8_Tpex")
+
+OV <- subset(OV, subset = functional.cluster %in% cd8_OV)
+summary(as.factor(OV@meta.data$functional.cluster))
+
+OV$Study <- "OV"
+
+saveRDS(object = OV, file= "OV_CTLs.rds", refhook = NULL)
+
+##########################
+######### LUNG #########
+##########################
+
+LUAD <- readRDS("GSE131907_Lung_Cancer_raw_UMI_matrix.rds", refhook = NULL)
+
+matrix_dir <- 'C:/Users/eprieto/Desktop/SINGLE_CELL/LUNG_2/'
+
+metadata.path <- paste0(matrix_dir, 'metadata.txt.gz')
+
+metadata <- read.delim(metadata.path,
+                       header = TRUE,
+                       stringsAsFactors = FALSE,
+                       row.names = 1)    
+
+LUAD <- CreateSeuratObject(counts = LUAD) # Esto requiere 23 Gb de Ram y tiene que hacerse en el cluster
+
+# Aqui lo cargo en el PC
+
+# LUAD <- readRDS("LUAD_object.rds", refhook = NULL)
+# LUAD <- AddMetaData(object = LUAD, metadata = metadata)
+# saveRDS(object = "LUAD_object.rds", refhook = NULL)
+
+LUAD <- readRDS("LUAD_object.rds", refhook = NULL)
+
+summary(as.factor(LUAD@meta.data$'Sample_Origin'))
+LUAD <- subset(LUAD, subset = Sample_Origin == "tLung")
+
+summary(as.factor(LUAD@meta.data$Cell_type))
+LUAD <- subset(LUAD, subset = Cell_type == "T lymphocytes")
+
+
+
+LUAD[["percent.mt"]] <- PercentageFeatureSet(LUAD, pattern = "^MT-")
+
+VlnPlot(LUAD, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+LUAD <- subset(LUAD, subset = nFeature_RNA > 400 & nFeature_RNA < 2000)
+LUAD <- subset(LUAD, subset = nCount_RNA > 200 & nCount_RNA < 5000)
+LUAD <- subset(LUAD, subset = percent.mt > 0 & percent.mt < 5)
+
+plot1 <- FeatureScatter(LUAD, feature1 = "nCount_RNA", feature2 = "percent.mt")
+plot2 <- FeatureScatter(LUAD, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+plot1 + plot2
+
+LUAD <- NormalizeData(LUAD, normalization.method = "LogNormalize", scale.factor = 10000)
+LUAD <- FindVariableFeatures(LUAD, selection.method = "vst", verbose = T)
+LUAD_genes <- rownames(LUAD)
+LUAD <- ScaleData(LUAD, features = LUAD_genes)
+
+LUAD <- RunPCA(LUAD, features = VariableFeatures(object = LUAD))
+
+ElbowPlot(LUAD)
+
+LUAD <- FindNeighbors(LUAD, dims = 1:20)
+LUAD <- FindClusters(LUAD, resolution = 2.0)
+LUAD <- RunUMAP(LUAD, dims = 1:20)
+
+saveRDS(object = LUAD, file = "LUAD_object_filtered.rds", refhook = NULL)
+
+# Extraer los CTLs de LUAD
+
+ref <- load.reference.map()
+
+LUAD <- readRDS("LUNG_2/LUAD_object_filtered.rds", refhook = NULL)
+
+DefaultAssay(LUAD) <- "RNA"
+
+LUAD <- cellstate.predict(ref = ref, query = LUAD)
+summary(as.factor(LUAD@meta.data$functional.cluster))
+
+cd8_LUAD <- c("CD8_EarlyActiv", "CD8_EffectorMemory", "CD8_NaiveLike", "CD8_Tex", "CD8_Tpex")
+
+LUAD <- subset(LUAD, subset = functional.cluster %in% cd8_LUAD)
+summary(as.factor(LUAD@meta.data$functional.cluster))
+
+LUAD$Study <- "LUAD"
+
+saveRDS(object = LUAD, file= "LUAD_CTLs.rds", refhook = NULL)
+
+
+###############################################################################
+######### Pan infiltrating CTLs: Integrative analysis (no queda bien) #########
+###############################################################################
+
+# Integrative analysis of all studies (in the cluster)
+
+cells <- c("CD8_EffectorMemory", "CD8_Tex")
+
+BRCA <- readRDS(file= "BRCA_Carmona_CTLs.rds", refhook = NULL)
+BRCA_2 <- subset(BRCA, subset = functional.cluster %in% cells)
+
+SKCM <- readRDS(file= "SKCM_Carmona_CTLs.rds", refhook = NULL)
+SKCM_2 <- subset(SKCM, subset = functional.cluster %in% cells)
+
+HCC <- readRDS(file= "HCC_CTLs.rds", refhook = NULL)
+HCC_2 <- subset(HCC, subset = functional.cluster %in% cells)
+
+LUAD <- readRDS(file= "LUAD_CTLs.rds", refhook = NULL)
+LUAD_2 <- subset(LUAD, subset = functional.cluster %in% cells)
+
+OV <- readRDS(file= "OV_CTLs.rds", refhook = NULL)
+OV_2 <- subset(OV, subset = functional.cluster %in% cells)
+
+DefaultAssay(OV) = "RNA"
+
+list <- lapply(X = c(BRCA_2, SKCM_2, HCC_2, OV_2, LUAD_2), FUN = function(x) {
+  x <- NormalizeData(x)
+  x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 3000)
+})
+
+list <- lapply(X = c(BRCA_2, SKCM_2, HCC_2, OV_2, LUAD_2), FUN = function(x) {
+  x <- NormalizeData(x)
+  x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 3000)
+})
+
+features <- SelectIntegrationFeatures(object.list = list, nfeatures = 3000)
+
+anchors <- FindIntegrationAnchors(object.list = list, anchor.features = features)
+
+integrated <- IntegrateData(anchorset = anchors)
+
+DefaultAssay(integrated) <- "integrated"
+
+CTLs <- ScaleData(integrated, verbose = TRUE)
+CTLs <- RunPCA(CTLs, npcs = 20, verbose = TRUE)
+
+ElbowPlot(CTLs)
+
+CTLs <- RunUMAP(CTLs, reduction = "pca", dims = 1:20)
+CTLs <- FindNeighbors(CTLs, reduction = "pca", dims = 1:20)
+CTLs <- FindClusters(CTLs, resolution = 2.0)
+
+DimPlot(CTLs, reduction = "umap", group.by = "Study")
+DimPlot(CTLs, reduction = "umap", group.by = "functional.cluster")
+
+saveRDS(merged, "integrated_TemTex.rds", refhook = NULL)
+
+# Ninguno de los dos queda bien integrado, decido representarlo grafico a grafico
+
+########################################################################
+#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~
+#~#~#~#~#~#~#~#~#    Gene expression analysis    #~#~#~#~#~#~#~#~#~#~#~#
+#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~
+########################################################################
+
+# LUAD
+
+LUAD <- readRDS(file= "LUAD_CTLs.rds")
+
+exp.mat <- LUAD@assays[["RNA"]]@counts
+
+signatures <- list(UPS = c("PSMB2", "PSMC3", "RBX1"),
+                   CHAPERONAS = c("PSMG1", "PSMG2", "PSMG3", "PSMG4", "POMP", "PSMD9", "PSMD5", "PAAF1"),
+                   TF = c("NRF1", "NFE2L1"),
+                   EXHAUSTION = c("LAG3", "XCL1", "CRTAM", "IFNG", "CCL4", "PDCD1", "DUSP4", "ZEB2", "NR4A2", "SLA", "TIGIT", "TNFRSF9", "TOX", "LYST", "TNFSF4", "CCL3", "RAB27A", "CD70", "PLSCR1", "CXCL13", "HAVCR2", "CTSD", "ID2", "CD63", "RBPJ", "FAM3C", "CSF1", "ENTPD1"),
+                   EFFECTOR_MEMORY = c("GZMK", "NKG7", "GZMB", "PRF1", "ABI3", "FASLG", "C12orf75", "EOMES", "CHST12", "CCR5", "HCST", "HOPX", "SLAMF7", "CXCR3", "OASL", "F2R", "CXCR6"),
+                   NAIVE = c("CCR7", "IL7R", "SELL", "TCF7", "TXK", "S1PR1", "LEF1", "SATB1"),
+                   EARLY_ACTIVATED = c("FOS", "CD69", "ZFP36", "FOSB", "CCL5", "GZMM", "DUSP2", "LYAR", "SAMD3", "CXCR4", "CTSW", "CD8A", "ANXA1", "KLRG1", "CD8B", "AOAH", "TAGAP", "KLRD1", "IER2", "GZMA", "CST7", "ITM2C", "PARP8", "BTG2")
+)
+
+
+u.scores <- ScoreSignatures_UCell(exp.mat, features = signatures)
+u.scores[1:8, 1:7]
+
+LUAD <- AddMetaData(LUAD, metadata = as.data.frame(u.scores))
+
+DimPlot(LUAD, reduction = "umap", group.by = "functional.cluster")
+
+signature.names <- paste0(names(signatures), "_UCell")
+
+FeaturePlot(LUAD, reduction = "umap", features = signature.names, ncol = 4, order = T)
+
+
+# OV
+
+OV <- readRDS(file= "OV_CTLs.rds")
+
+exp.mat <- OV@assays[["RNA"]]@counts
+
+signatures <- list(UPS = c("PSMB2", "PSMC3", "RBX1"),
+                   CHAPERONAS = c("PSMG1", "PSMG2", "PSMG3", "PSMG4", "POMP", "PSMD9", "PSMD5", "PAAF1"),
+                   TF = c("NRF1", "NFE2L1"),
+                   EXHAUSTION = c("LAG3", "XCL1", "CRTAM", "IFNG", "CCL4", "PDCD1", "DUSP4", "ZEB2", "NR4A2", "SLA", "TIGIT", "TNFRSF9", "TOX", "LYST", "TNFSF4", "CCL3", "RAB27A", "CD70", "PLSCR1", "CXCL13", "HAVCR2", "CTSD", "ID2", "CD63", "RBPJ", "FAM3C", "CSF1", "ENTPD1"),
+                   EFFECTOR_MEMORY = c("GZMK", "NKG7", "GZMB", "PRF1", "ABI3", "FASLG", "C12orf75", "EOMES", "CHST12", "CCR5", "HCST", "HOPX", "SLAMF7", "CXCR3", "OASL", "F2R", "CXCR6"),
+                   NAIVE = c("CCR7", "IL7R", "SELL", "TCF7", "TXK", "S1PR1", "LEF1", "SATB1"),
+                   EARLY_ACTIVATED = c("FOS", "CD69", "ZFP36", "FOSB", "CCL5", "GZMM", "DUSP2", "LYAR", "SAMD3", "CXCR4", "CTSW", "CD8A", "ANXA1", "KLRG1", "CD8B", "AOAH", "TAGAP", "KLRD1", "IER2", "GZMA", "CST7", "ITM2C", "PARP8", "BTG2")
+)
+
+
+u.scores <- ScoreSignatures_UCell(exp.mat, features = signatures)
+u.scores[1:8, 1:7]
+
+OV <- AddMetaData(OV, metadata = as.data.frame(u.scores))
+
+DimPlot(OV, reduction = "umap", group.by = "functional.cluster")
+
+signature.names <- paste0(names(signatures), "_UCell")
+
+FeaturePlot(OV, reduction = "umap", features = signature.names, ncol = 4, order = T)
+
+# HCC
+
+HCC <- readRDS(file= "HCC_CTLs.rds")
+
+exp.mat <- HCC@assays[["RNA"]]@counts
+
+signatures <- list(UPS = c("PSMB2", "PSMC3", "RBX1"),
+                   CHAPERONAS = c("PSMG1", "PSMG2", "PSMG3", "PSMG4", "POMP", "PSMD9", "PSMD5", "PAAF1"),
+                   TF = c("NRF1", "NFE2L1"),
+                   EXHAUSTION = c("LAG3", "XCL1", "CRTAM", "IFNG", "CCL4", "PDCD1", "DUSP4", "ZEB2", "NR4A2", "SLA", "TIGIT", "TNFRSF9", "TOX", "LYST", "TNFSF4", "CCL3", "RAB27A", "CD70", "PLSCR1", "CXCL13", "HAVCR2", "CTSD", "ID2", "CD63", "RBPJ", "FAM3C", "CSF1", "ENTPD1"),
+                   EFFECTOR_MEMORY = c("GZMK", "NKG7", "GZMB", "PRF1", "ABI3", "FASLG", "C12orf75", "EOMES", "CHST12", "CCR5", "HCST", "HOPX", "SLAMF7", "CXCR3", "OASL", "F2R", "CXCR6"),
+                   NAIVE = c("CCR7", "IL7R", "SELL", "TCF7", "TXK", "S1PR1", "LEF1", "SATB1"),
+                   EARLY_ACTIVATED = c("FOS", "CD69", "ZFP36", "FOSB", "CCL5", "GZMM", "DUSP2", "LYAR", "SAMD3", "CXCR4", "CTSW", "CD8A", "ANXA1", "KLRG1", "CD8B", "AOAH", "TAGAP", "KLRD1", "IER2", "GZMA", "CST7", "ITM2C", "PARP8", "BTG2")
+)
+
+
+u.scores <- ScoreSignatures_UCell(exp.mat, features = signatures)
+u.scores[1:8, 1:7]
+
+HCC <- AddMetaData(HCC, metadata = as.data.frame(u.scores))
+
+DimPlot(HCC, reduction = "umap", group.by = "functional.cluster")
+
+signature.names <- paste0(names(signatures), "_UCell")
+
+FeaturePlot(HCC, reduction = "umap", features = signature.names, ncol = 4, order = T)
+
+######################
+######### Fin #########
+######################
