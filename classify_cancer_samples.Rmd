@@ -1,0 +1,151 @@
+---
+title: Classify T cells from multiple studies (human cancers)
+author: "M. Andreatta <massimo.andreatta at unil.ch> and S. Carmona <santiago.carmona at unil.ch>"
+knit: (function(input_file, encoding) {
+  out_dir <- 'docs';
+  rmarkdown::render(input_file,
+ encoding=encoding,
+ output_file=file.path(dirname(input_file), out_dir, 'index.html'))})
+#output: html_notebook
+---
+
+```{r}
+library(ggplot2)
+library(Seurat)
+library(UCell)
+library(scGate)
+#remotes::install_github("carmonalab/ProjecTILs", ref="26683f9")  #fix commit, for reproducibility
+library(ProjecTILs)
+library(SingleCellExperiment)
+```
+
+
+We will use the collection of single-cell data by Zheng et al. (2021) Science, which covers 21 cancer types and 300 patients.
+
+paper: https://www.science.org/doi/10.1126/science.abe6474
+Data: https://zenodo.org/record/5461803#.YgT60GAo-eQ
+
+```{r}
+datapath <- "~/Dropbox/CSI/Datasets/Zhang_TIL_Science2021/data_CD8_sce_list.rds"
+
+data.list <- readRDS(datapath)
+names(data.list)
+```
+
+Convert to Seurat objects
+```{r}
+#For intial small tests
+#data.list <- data.list[1:3]
+
+tab <- ProjecTILs::Hs2Mm.convert.table
+
+seurat.list <- lapply(X = names(data.list),  
+                    FUN=function(x) {
+                        mainExpName(data.list[[x]]) <- 'RNA'
+                        
+                        a <- names(assays(data.list[[x]]))
+                        if ("counts" %in% a) {
+                           counts.slot = "counts"
+                        } else if ("log2TPM" %in% a) {
+                           counts.slot = "log2TPM"
+                        } else if ("norm_exprs" %in% a) {
+                           counts.slot = "norm_exprs" 
+                        }  
+
+                        r <- as.Seurat(data.list[[x]], counts = counts.slot, data = "norm_exprs", project=x)
+                        is.names <- length(intersect(rownames(r), tab$Gene.HS))
+                        is.ensemble <- length(intersect(rownames(r), tab$Gene.stable.ID.HS))
+                        
+                        if (is.ensemble > is.names) {
+                           r <- ProjecTILs:::convert.orthologs(r, table=tab, from="Gene.stable.ID.HS", to="Gene.HS", slot="counts")
+                           r <- ProjecTILs:::convert.orthologs(r, table=tab, from="Gene.stable.ID.HS", to="Gene.HS", slot="data")
+                           r[["RNA"]]@meta.features <- data.frame(row.names = rownames(r[["RNA"]]))
+                        }
+                        r
+                    })
+names(seurat.list) <- names(data.list)
+```
+
+```{r}
+saveRDS(seurat.list, "aux/Zheng.seurat.list.rds")
+```
+
+Some QC
+```{r}
+t(as.data.frame(lapply(seurat.list, dim)))
+
+seu.downsampled <- lapply(seurat.list,
+                          FUN=function(x) {
+                             Idents(x) <- "dataset"
+                             subset(x, downsample=1000)
+                          })
+
+seurat.merged <- Reduce(merge, seu.downsampled)
+Idents(seurat.merged) <- "dataset"
+seurat.merged <- AddMetaData(seurat.merged, metadata = PercentageFeatureSet(seurat.merged, pattern = "^RP[LS]"), col.name = "percent.ribo")
+seurat.merged <- AddMetaData(seurat.merged, metadata = PercentageFeatureSet(seurat.merged, pattern = "^MT-"), col.name = "percent.mito")
+
+VlnPlot(seurat.merged, features = c("nFeature_RNA", "nCount_RNA","percent.ribo","percent.mito"), ncol = 2, pt.size=0)
+
+VlnPlot(seurat.merged, features = c("LCK", "SPI1","MS4A1","LYZ","CD2","CD3E","CD3G","CD8A","NCAM1"), pt.size=0, stack = T, flip=T)
+```
+
+
+Check some signatures for major cell types
+```{r}
+sigs <- list("Immune"=c("PTPRC"),
+             "Myeloid"=c("SPI1"),
+             "Tcell"=c("CD3D","CD3E","CD3G","CD2"),
+             "Cd8T"=c("CD8A","CD8B","CD4-"),
+             "Stromal"= c("MMP2","COL1A1","COL1A2","COL5A1","LUM","PDGFRA"),
+             "Bcell" = c("MS4A1","BANK1","PAX5","CD19"),
+             "NK" = c("KLRD1","NKG7","NCR1","FCGR3A","CD3D-","CD3E-","CD3G-"),
+             "MoMacDC" = c("LYZ","CSF1R","MSR1","MAFB","CD300E")
+             )
+
+
+cycling.g1 <- scGate::genes.blacklist.default$Hs$cellCycle.G1S
+cycling.g2 <- scGate::genes.blacklist.default$Hs$cellCycle.G2M
+cycling <- c(cycling.g1, cycling.g2)
+
+sigs$cycling = cycling
+
+seurat.list <- lapply(seurat.list,
+       FUN = function(x) {
+          AddModuleScore_UCell(x, features = sigs, name=NULL, ncores=4)
+       })
+
+```
+
+```{r fig.height=3}
+pll <- lapply(names(seurat.list),
+       FUN = function(x) {
+          FeaturePlot(seurat.list[[x]], features=c("Tcell")) + ggtitle(x)
+          #FeaturePlot(seurat.list[[x]], features=c("NK")) + ggtitle(x)
+       })
+
+wrap_plots(pll)
+
+```
+Filter CD8 T cells
+```{r}
+models <- scGate::get_scGateDB()
+cd8.model <- models$human$generic$CD8T
+
+gated.list <- lapply(seurat.list,
+       FUN = function(x) {
+          scGate(x, model=cd8.model)
+       })
+```
+
+Show results of gating per dataset
+```{r fig.height=3}
+pll <- lapply(names(gated.list),
+       FUN = function(x) {
+          DimPlot(gated.list[[x]], group.by="is.pure") + ggtitle(x)
+       })
+
+wrap_plots(pll)
+
+```
+

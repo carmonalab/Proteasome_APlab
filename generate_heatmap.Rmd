@@ -58,6 +58,7 @@ DimPlot(merged, group.by = "cancer.type")
 DimPlot(merged, group.by = "functional.cluster")
 
 FeaturePlot(merged, features=c("Cd2","Cd8a","Cd8b1","Cd4"))
+FeaturePlot(merged, features=c("Cd3d","Cd3g","Cd3e","Cd8b1"))
 FeaturePlot(merged, features=c("Lck","Spi1","Ms4a1","Igha"))
 ```
 
@@ -105,11 +106,7 @@ Automatic detection using scGate
 ```{r}
 models <- scGate::get_scGateDB()
 
-cycling.g1 <- scGate::genes.blacklist.default$Mm$cellCycle.G1S
-cycling.g2 <- scGate::genes.blacklist.default$Mm$cellCycle.G2M
-cycling <- c(cycling.g1, cycling.g2)
-
-gated <- scGate(merged, model = models$mouse$generic$CD8T, additional.signatures = list("cycling"=cycling))
+gated <- scGate(merged, model = models$mouse$generic$CD8T)
 scGate::plot_levels(gated)
 ```
 
@@ -150,12 +147,19 @@ markers.list <- rownames(markers)
 
 Proteasomal genes
 ```{r}
-proteasomal.genes <- c("Psma1","Psma2", "Psma3","Psma4","Psma5","Psma6","Psma7",
-                  "Psma8","Psmb1","Psmb2","Psmb3","Psmb4","Psmb5","Psmb6","Psmb7",
-                  "Psmb8","Psmb9","Psmb10","Psmc1","Psmc2","Psmc3","Psmc4","Psmc5",
-                  "Psmc6","Psmd1","Psmd2","Psmd3","Psmd4","Psmd5","Psmd6","Psmd7",
-                  "Psmd8","Psmd9","Psmd10","Psmd11","Psmd12","Psmd13","Psmd14",
-                  "Sem1","Adrm1","Psme1","Psme2","Psme3","Psme4","Psmf1")
+#proteasomal.genes <- c("Psma1","Psma2", "Psma3","Psma4","Psma5","Psma6","Psma7",
+#                  "Psma8","Psmb1","Psmb2","Psmb3","Psmb4","Psmb5","Psmb6","Psmb7",
+#                  "Psmb8","Psmb9","Psmb10","Psmc1","Psmc2","Psmc3","Psmc4","Psmc5",
+#                  "Psmc6","Psmd1","Psmd2","Psmd3","Psmd4","Psmd5","Psmd6","Psmd7",
+#                  "Psmd8","Psmd9","Psmd10","Psmd11","Psmd12","Psmd13","Psmd14",
+#                  "Sem1","Adrm1","Psme1","Psme2","Psme3","Psme4","Psmf1")
+
+
+proteasomal.genes <- c("Psma1", "Psma2", "Psma3", "Psma4", "Psma5", "Psma6", "Psma7",
+                       "Psmb1", "Psmb2", "Psmb3", "Psmb4", "Psmb5", "Psmb6", "Psmb7",
+                       "Psmc1", "Psmc2", "Psmc3", "Psmc4", "Psmc5", "Psmc6",
+                       "Psmd1", "Psmd2", "Psmd3", "Psmd4", "Psmd6", "Psmd7", 
+                       "Psmd8", "Psmd11", "Psmd12", "Psmd13", "Psmd14")
 
 ```
 
