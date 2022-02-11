@@ -17,6 +17,7 @@ library(scGate)
 #remotes::install_github("carmonalab/ProjecTILs", ref="26683f9")  #fix commit, for reproducibility
 library(ProjecTILs)
 library(SingleCellExperiment)
+library(viridis)
 ```
 
 
@@ -51,16 +52,12 @@ seurat.list <- lapply(X = names(data.list),
                         } else if ("norm_exprs" %in% a) {
                            counts.slot = "norm_exprs" 
                         }  
+                        
+                        #Use gene names for all objects (stored in display.name)
+                        rownames(data.list[[x]]) <- rowData(data.list[[x]])[["display.name"]]  
 
                         r <- as.Seurat(data.list[[x]], counts = counts.slot, data = "norm_exprs", project=x)
-                        is.names <- length(intersect(rownames(r), tab$Gene.HS))
-                        is.ensemble <- length(intersect(rownames(r), tab$Gene.stable.ID.HS))
-                        
-                        if (is.ensemble > is.names) {
-                           r <- ProjecTILs:::convert.orthologs(r, table=tab, from="Gene.stable.ID.HS", to="Gene.HS", slot="counts")
-                           r <- ProjecTILs:::convert.orthologs(r, table=tab, from="Gene.stable.ID.HS", to="Gene.HS", slot="data")
-                           r[["RNA"]]@meta.features <- data.frame(row.names = rownames(r[["RNA"]]))
-                        }
+
                         r
                     })
 names(seurat.list) <- names(data.list)
@@ -68,10 +65,11 @@ names(seurat.list) <- names(data.list)
 
 ```{r}
 saveRDS(seurat.list, "aux/Zheng.seurat.list.rds")
+seurat.list <- readRDS("aux/Zheng.seurat.list.rds")
 ```
 
 Some QC
-```{r}
+```{r eval=F, fig.height=4}
 t(as.data.frame(lapply(seurat.list, dim)))
 
 seu.downsampled <- lapply(seurat.list,
@@ -88,6 +86,7 @@ seurat.merged <- AddMetaData(seurat.merged, metadata = PercentageFeatureSet(seur
 VlnPlot(seurat.merged, features = c("nFeature_RNA", "nCount_RNA","percent.ribo","percent.mito"), ncol = 2, pt.size=0)
 
 VlnPlot(seurat.merged, features = c("LCK", "SPI1","MS4A1","LYZ","CD2","CD3E","CD3G","CD8A","NCAM1"), pt.size=0, stack = T, flip=T)
+ggsave("plots/Zheng.sets.violins.png", height=8, width=15)
 ```
 
 
@@ -97,10 +96,13 @@ sigs <- list("Immune"=c("PTPRC"),
              "Myeloid"=c("SPI1"),
              "Tcell"=c("CD3D","CD3E","CD3G","CD2"),
              "Cd8T"=c("CD8A","CD8B","CD4-"),
+             "Cd4T"=c("CD4","CD40LG"),
+             "Treg"=c("CD4","FOXP3"),
              "Stromal"= c("MMP2","COL1A1","COL1A2","COL5A1","LUM","PDGFRA"),
-             "Bcell" = c("MS4A1","BANK1","PAX5","CD19"),
+             "Bcell" = c("CD79A","MS4A1","BANK1","PAX5","CD19"),
              "NK" = c("KLRD1","NKG7","NCR1","FCGR3A","CD3D-","CD3E-","CD3G-"),
-             "MoMacDC" = c("LYZ","CSF1R","MSR1","MAFB","CD300E")
+             "MoMacDC" = c("LYZ","CSF1R","MSR1","MAFB","CD300E"),
+             "Plasma_cell" = c("IGKC","IGHG3","IGHG1","IGHA1","CD19-")
              )
 
 
@@ -117,35 +119,59 @@ seurat.list <- lapply(seurat.list,
 
 ```
 
-```{r fig.height=3}
-pll <- lapply(names(seurat.list),
-       FUN = function(x) {
-          FeaturePlot(seurat.list[[x]], features=c("Tcell")) + ggtitle(x)
-          #FeaturePlot(seurat.list[[x]], features=c("NK")) + ggtitle(x)
-       })
+```{r fig.height=6}
 
-wrap_plots(pll)
-
+for (type in names(sigs)) {
+  
+  pll <- lapply(names(seurat.list),
+                FUN = function(x) {
+                  FeaturePlot(seurat.list[[x]], features=c(type), max.cutoff = 'q99') + 
+   #                 scale_color_viridis(option="D", direction=1) + 
+                    ggtitle(sprintf("%s (%s)", x, type))
+                })
+  
+  wrap_plots(pll)
+  ggsave(sprintf("plots/Zheng.sets.UCell.scores.%s.png", type), height=18, width=25)
+}
 ```
 Filter CD8 T cells
 ```{r}
 models <- scGate::get_scGateDB()
 cd8.model <- models$human$generic$CD8T
 
-gated.list <- lapply(seurat.list,
+gated.list <- lapply(names(seurat.list),
        FUN = function(x) {
-          scGate(x, model=cd8.model)
+          print(sprintf("#Running dataset %s", x))
+          scGate(seurat.list[[x]], model=cd8.model, ncores=4)
        })
+names(gated.list) <- names(seurat.list)
 ```
 
 Show results of gating per dataset
-```{r fig.height=3}
+```{r fig.height=6}
+cols = c("#10f87b","#fa765e")
+names(cols) <- c("Pure","Impure")
 pll <- lapply(names(gated.list),
        FUN = function(x) {
-          DimPlot(gated.list[[x]], group.by="is.pure") + ggtitle(x)
+          DimPlot(gated.list[[x]], group.by="is.pure", cols = cols) + ggtitle(x)
        })
 
 wrap_plots(pll)
+ggsave("plots/Zheng.sets.gated.cd8t.png", height=18, width=25)
 
 ```
+Convert to `sce`?
+```{r}
+gated.sce <- lapply(gated.list, function(x){
+         as.SingleCellExperiment(x)
+})
+
+```
+
+Save results of scGate
+```{r}
+saveRDS(gated.list, "aux/Zheng.seurat.gated.rds")
+gated.list <- readRDS("aux/Zheng.seurat.gated.rds")
+```
+
 
