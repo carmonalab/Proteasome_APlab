@@ -27,9 +27,13 @@ paper: https://www.science.org/doi/10.1126/science.abe6474
 Data: https://zenodo.org/record/5461803#.YgT60GAo-eQ
 
 ```{r}
-datapath <- "~/Dropbox/CSI/Datasets/Zhang_TIL_Science2021/data_CD8_sce_list.rds"
+datapath <- "~/Dropbox/CSI/Datasets/Zhang_TIL_Science2021/expression/CD8/byDataset"
 
-data.list <- readRDS(datapath)
+data.list <- list()
+for (file in list.files(datapath)) {
+  name <- gsub(pattern='.sce.rds', replacement = '', x=file)
+  data.list[[name]] <- readRDS(sprintf("%s/%s",datapath,file))
+}
 names(data.list)
 ```
 
@@ -160,13 +164,35 @@ wrap_plots(pll)
 ggsave("plots/Zheng.sets.gated.cd8t.png", height=18, width=25)
 
 ```
-Convert to `sce`?
-```{r}
-gated.sce <- lapply(gated.list, function(x){
-         as.SingleCellExperiment(x)
+
+Show 'atlas' annotations
+```{r fig.height=6, fig.width=12}
+library(RColorBrewer)
+cc <- lapply(gated.list, function(x) {
+  unique(x$meta.cluster.coarse)
 })
+clusters <- unique(unlist(cc))
+
+palette <- brewer.pal(n = 12, name = 'Paired')
+names(palette) <- clusters
+pll <- lapply(names(gated.list),
+       FUN = function(x) {
+          DimPlot(gated.list[[x]], group.by="meta.cluster.coarse", cols = palette) + ggtitle(x)
+       })
+
+wrap_plots(pll)
+ggsave("plots/Zheng.sets.by.coarse.cluster.png", height=18, width=35)
 
 ```
+
+
+Convert to `sce`?
+```{r eval=F}
+gated.sce <- lapply(gated.list, function(x){
+      as.SingleCellExperiment(x)
+})
+```
+
 
 Save results of scGate
 ```{r}
@@ -175,3 +201,26 @@ gated.list <- readRDS("aux/Zheng.seurat.gated.rds")
 ```
 
 
+Select pure cells and sufficiently large samples
+```{r}
+min.cells <- 200
+large.samples <- lapply(names(gated.list),
+       FUN = function(x) {
+          gated.list[[x]] <- subset(gated.list[[x]], subset=is.pure=="Pure")
+          ss <- SplitObject(gated.list[[x]], split.by = 'patient')
+          names(ss) <- paste0(x, "_", names(ss))
+          
+          ncells <- lapply(ss, ncol)
+          ss <- ss[ncells>min.cells]
+       })
+large.samples <- unlist(large.samples, recursive = F)
+names(large.samples)
+```
+
+Project individual samples in reference TIL atlas
+```{r}
+library(ProjecTILs)
+ref <- load.reference.map()
+projected <- make.projection(large.samples, ref=ref, filter.cells = FALSE, skip.normalize = T, future.maxSize = 8000)
+
+```
