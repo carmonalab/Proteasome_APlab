@@ -14,7 +14,8 @@ library(ggplot2)
 library(Seurat)
 library(UCell)
 library(scGate)
-#remotes::install_github("carmonalab/ProjecTILs", ref="26683f9")  #fix commit, for reproducibility
+#remotes::install_github("carmonalab/ProjecTILs", ref="518bd89")  #specify commit, for reproducibility
+
 library(ProjecTILs)
 library(SingleCellExperiment)
 library(viridis)
@@ -44,11 +45,13 @@ Convert to Seurat objects
 
 tab <- ProjecTILs::Hs2Mm.convert.table
 
-seurat.list <- lapply(X = names(data.list),  
-                    FUN=function(x) {
-                        mainExpName(data.list[[x]]) <- 'RNA'
+seurat.list <- lapply(X = seq_along(data.list),  
+                    FUN=function(i) {
+                        mainExpName(data.list[[i]]) <- 'RNA'
+                        study.name <- names(data.list)[i]
+                        study.id <- sprintf("S%02d",i)
                         
-                        a <- names(assays(data.list[[x]]))
+                        a <- names(assays(data.list[[i]]))
                         if ("counts" %in% a) {
                            counts.slot = "counts"
                         } else if ("log2TPM" %in% a) {
@@ -58,9 +61,10 @@ seurat.list <- lapply(X = names(data.list),
                         }  
                         
                         #Use gene names for all objects (stored in display.name)
-                        rownames(data.list[[x]]) <- rowData(data.list[[x]])[["display.name"]]  
+                        rownames(data.list[[i]]) <- rowData(data.list[[i]])[["display.name"]]  
 
-                        r <- as.Seurat(data.list[[x]], counts = counts.slot, data = "norm_exprs", project=x)
+                        r <- as.Seurat(data.list[[i]], counts = counts.slot, data = "norm_exprs", project=study.name)
+                        r <- RenameCells(r, add.cell.id = study.id)
 
                         r
                     })
@@ -106,7 +110,8 @@ sigs <- list("Immune"=c("PTPRC"),
              "Bcell" = c("CD79A","MS4A1","BANK1","PAX5","CD19"),
              "NK" = c("KLRD1","NKG7","NCR1","FCGR3A","CD3D-","CD3E-","CD3G-"),
              "MoMacDC" = c("LYZ","CSF1R","MSR1","MAFB","CD300E"),
-             "Plasma_cell" = c("IGKC","IGHG3","IGHG1","IGHA1","CD19-")
+             "Plasma_cell" = c("IGKC","IGHG3","IGHG1","IGHA1","CD19-"),
+             "MAIT"=c("KLRB1", "SLC4A10", "NCR3")
              )
 
 
@@ -129,7 +134,12 @@ for (type in names(sigs)) {
   
   pll <- lapply(names(seurat.list),
                 FUN = function(x) {
-                  FeaturePlot(seurat.list[[x]], features=c(type), max.cutoff = 'q99') + 
+                  cols = c("lightgrey", "blue")
+                  if (sum(seurat.list[[x]][[type]])==0) {
+                     cols = c("lightgrey", "lightgrey")
+                  }
+                  
+                  FeaturePlot(seurat.list[[x]], features=c(type), max.cutoff = 'q99', cols=cols) + 
    #                 scale_color_viridis(option="D", direction=1) + 
                     ggtitle(sprintf("%s (%s)", x, type))
                 })
@@ -142,6 +152,9 @@ Filter CD8 T cells
 ```{r}
 models <- scGate::get_scGateDB()
 cd8.model <- models$human$generic$CD8T
+
+#Add MAITs to model
+cd8.model <- scGate::gating_model(cd8.model, level=4, negative=T, name="MAIT", signature = c("KLRB1", "SLC4A10", "NCR3"))
 
 gated.list <- lapply(names(seurat.list),
        FUN = function(x) {
@@ -185,6 +198,16 @@ ggsave("plots/Zheng.sets.by.coarse.cluster.png", height=18, width=35)
 
 ```
 
+Plot by sample/patient
+```{r fig.height=10, fig.width=20}
+pll <- lapply(names(gated.list),
+       FUN = function(x) {
+          DimPlot(gated.list[[x]], group.by="patient") + ggtitle(x)
+       })
+
+wrap_plots(pll)
+ggsave("plots/Zheng.sets.by.patient.png", height=18, width=35)
+```
 
 Convert to `sce`?
 ```{r eval=F}
@@ -207,6 +230,8 @@ min.cells <- 200
 large.samples <- lapply(names(gated.list),
        FUN = function(x) {
           gated.list[[x]] <- subset(gated.list[[x]], subset=is.pure=="Pure")
+          gated.list[[x]] <- DietSeurat(gated.list[[x]], dimreducs = NULL, assays = "RNA")
+          
           ss <- SplitObject(gated.list[[x]], split.by = 'patient')
           names(ss) <- paste0(x, "_", names(ss))
           
@@ -221,6 +246,85 @@ Project individual samples in reference TIL atlas
 ```{r}
 library(ProjecTILs)
 ref <- load.reference.map()
-projected <- make.projection(large.samples, ref=ref, filter.cells = FALSE, skip.normalize = T, future.maxSize = 8000)
+
+#Focus on CD8 T cells
+is.cd8 <- colnames(ref)[ref$functional.cluster %in% c("CD8_Tex","CD8_Tpex","CD8_EffectorMemory","CD8_EarlyActiv","CD8_NaiveLike")]
+
+ref.cd8 <- subset(ref, cells=is.cd8)
+#ref.cd8@misc$pca_object$x <- ref.cd8@misc$pca_object$x[is.cd8,]
+#ref.cd8@misc$umap_object$layout <- ref.cd8@misc$umap_object$layout[is.cd8,]
+#ref.cd8@misc$umap_object$data <- ref.cd8@misc$umap_object$data[is.cd8,]
+plot.projection(ref.cd8)
+```
+
+Make projection
+```{r}
+#ref.use = ref
+ref.use = ref.cd8
+
+projected <- make.projection(large.samples, ref=ref.use, filter.cells = FALSE, skip.normalize = T, ncores=8)
+#projected <- make.projection(large.samples[1:4], ref=ref.use, filter.cells = FALSE, skip.normalize = T, ncores=4)
+
+projected <- lapply(projected, function(x) {
+                      cellstate.predict(ref=ref.use, query=x)
+                    })
+```
+
+Save results
+```{r}
+saveRDS(projected, "aux/Zheng.seurat.projected.rds")
+projected <- readRDS("aux/Zheng.seurat.projected.rds")
+```
+
+```{r fig.height=10, fig.width=20}
+pll <- lapply(names(projected),
+       FUN = function(x) {
+          plot.projection(projected[[x]], ref=ref.use) + NoLegend() + ggtitle(x)
+       })
+
+wrap_plots(pll)
+ggsave("plots/Zheng.samples.projected.png", height=18, width=35)
+```
+
+```{r fig.height=4, fig.width=10}
+genes <- c("Tcf7","Ccr7","Il7r","Cd4","Cd8a","Gzmb","Gzmk","Tox","Pdcd1","Lag3","Havcr2","Cx3cr1","Cxcl13")
+ProjecTILs::plot.states.radar(ref=ref.use, query=projected[1:4], genes4radar = genes, min.cells = 50)
+```
+
+
+Merge results to visualize jointly and by study
+```{r}
+projected.merged <- Reduce(f = ProjecTILs:::merge.Seurat.embeddings, x = projected)
+```
+
+```{r}
+plot.projection(projected.merged, ref=ref.use) + ggtitle("All studies")
+```
+FGlobal average profiles
+```{r fig.height=4, fig.width=10}
+genes <- c("Tcf7","Ccr7","Il7r","Cd4","Cd8a","Gzmb","Gzmk","Tox","Pdcd1","Lag3","Havcr2","Cx3cr1","Cxcl13")
+ProjecTILs::plot.states.radar(ref=ref.use, query=projected.merged, genes4radar = genes, min.cells = 30)
+```
+
+
+Split by study
+```{r}
+projected.by.study <- SplitObject(projected.merged, split.by = "dataset")
+
+pll <- lapply(names(projected.by.study),
+       FUN = function(x) {
+          plot.projection(projected.by.study[[x]], ref=ref.use) + NoLegend() + ggtitle(x)
+       })
+
+wrap_plots(pll)
+ggsave("plots/Zheng.samples.projected.by.study.png", height=15, width=28)
+
+```
+Agreement between studies, and with reference expression profiles
+```{r fig.height=4, fig.width=10}
+genes <- c("Tcf7","Ccr7","Il7r","Cd4","Cd8a","Gzmb","Gzmk","Tox","Pdcd1","Lag3","Havcr2","Cx3cr1","Cxcl13")
+a <- ProjecTILs::plot.states.radar(ref=ref.use, query=projected.by.study, genes4radar = genes, min.cells = 30, return = T)
+
+ggsave("plots/radars.projected.by.study.png", plot = a, height=12, width=25)
 
 ```
