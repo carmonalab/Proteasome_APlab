@@ -22,112 +22,96 @@ library(tibble)
 library(fgsea)
 ```
 
-El punto de partida es Tex_EffectorMemory_CD8.rds, que contiene las T cells previamente clasificadas como Tex o EffectorMemory por ProjecTILs (merged Seurat objects).
 
-#NOTE: Can you share the scripts used to classify T cells from original single-cell data?
-Starting point: several .rds files from which I extracted only the CD8_Tex and CD8_EffectorMemory subpopulations (ovarian, liver, breast, lung_1 & lung_2)
+Load list of annotated datasets
+(from Zheng et al. Science collection, prepared using classify_cancer_samples.Rmd script)
 
-```{r}
-#merged <- merge(x=lung_2, y= c(lung_1, breast, liver, ovarian))
-#DefaultAssay(merged) <- "RNA"
+```{r message=F, warning=F}
+ddir <- "./aux"
+data.list <- readRDS(sprintf("%s/Zheng.seurat.gated.annotated.Tex_Tem.rds", ddir))
 
-#merged <- FindVariableFeatures(merged, selection.method = "vst", nfeatures = 3000, verbose = T)
-#merged <- ScaleData(merged, verbose = FALSE)
-#merged <- RunPCA(merged, npcs = 20, verbose = FALSE)
-#merged <- RunUMAP(merged, reduction = "pca", dims = 1:20)
-#merged <- FindNeighbors(merged, reduction = "pca", dims = 1:20)
-#merged <- FindClusters(merged, resolution = 2.0)
+data.use <- lapply(data.list, function(x) {
+  c <- x@assays$RNA@data
+  sums <- apply(c, 1, function(r){sum(r>0)})
+  
+  genes.keep <- names(sums[sums>=1])
+  x@assays$RNA@data <- x@assays$RNA@data[genes.keep,]
+  x@assays$RNA@counts <- x@assays$RNA@counts[genes.keep,]
+  x@assays$RNA@meta.features <- x@assays$RNA@meta.features[genes.keep, , drop=FALSE]
+  x@reductions <- list()
+  x
+})
 
-#saveRDS(merged, "Pan_Tex_EffectorMemory_CD8.rds", refhook = NULL)
+#Only keep studies with a minimum number of cells
+min.cells <- 500
+ncells <- unlist(lapply(data.use, ncol))
+data.use <- data.use[ncells > min.cells]
+
+#Downsample overrepresented sets
+data.use <- lapply(data.use, function(x) {
+  Idents(x) <- "functional.cluster"
+  subset(x, cells=WhichCells(x,downsample=3000))
+})
+
+#Merge data
+merged <- Reduce(f=merge, x=data.use)
+
+saveRDS(merged, file="aux/Zheng.seurat.gated.annotated.Tex_Tem.merged.rds")
+merged <- readRDS("aux/Zheng.seurat.gated.annotated.Tex_Tem.merged.rds")
+
+table(merged$dataset, merged$functional.cluster)
 ```
-
-###############################################################################################
-######### Load the Seurat object and remove lung_1 (excluded  after heatmap analysis) #########
-###############################################################################################
-
+Calculate dimensionality reductions
 ```{r}
-ddir <- "./data"
-merged <- readRDS(sprintf("%s/Tex_EffectorMemory_CD8.rds", ddir))
-merged
+set.seed(12345)
+ndim=10
+
+nvar=300
+ntot=300
+blist <- unlist(scGate::genes.blacklist.default$Hs)
+
+#Find variable features individually in each dataset, then combine
+varfeat <- lapply(data.use, function(x) {
+    x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = nvar, verbose = FALSE)
+    x@assays$RNA@var.features
+})
+
+s <- names(sort(table(unlist(varfeat)), decreasing = T))
+s <- s[!s %in% blist]
+
+var.use <- head(s, ntot)
+merged@assays$RNA@var.features <- var.use
+
+merged <- ScaleData(merged, do.scale = TRUE, do.center = TRUE) 
+merged <- RunPCA(object = merged, features = var.use, ndims.print = 1:5, nfeatures.print = 10, npcs = ndim)
+merged <- RunUMAP(merged, reduction = "pca", dims = 1:ndim, seed.use=123)
+
 ```
 
 Have a look of the data
-```{r}
-DimPlot(merged)
-DimPlot(merged, group.by = "cancer.type")
-DimPlot(merged, group.by = "functional.cluster")
+```{r fig.height=3}
+palette <- c("#53B400","#edbe2a")
+DimPlot(merged, group.by = "dataset") + theme(aspect.ratio=1) + ggtitle("By study")
+DimPlot(merged, group.by = "functional.cluster", cols=palette) + theme(aspect.ratio=1) + ggtitle("ProjecTILs annotation")
 
-FeaturePlot(merged, features=c("Cd2","Cd8a","Cd8b1","Cd4"))
-FeaturePlot(merged, features=c("Cd3d","Cd3g","Cd3e","Cd8b1"))
-FeaturePlot(merged, features=c("Lck","Spi1","Ms4a1","Igha"))
+FeaturePlot(merged, features=c("CD2","CD8A","CD8B","CD4","CD3G","CD3E"), ncol=3)
+FeaturePlot(merged, features=c("CD3D","LCK","SPI1","MS4A1","KLRB1","NCAM1"), ncol=3)
+FeaturePlot(merged, features=c("CXCL13","FOS","CCL3","CCL5","GZMB","GZMK"), ncol=3)
+FeaturePlot(merged, features=c("HAVCR2","TOX","PDCD1","IL7R","CCR7","LAG3"), ncol=3)
 ```
 
-Check some signatures for major cell types
-```{r}
-sigs <- list("Immune"=c("Ptprc"),
-             "Myeloid"=c("Spi1"),
-             "Tcell"=c("Cd3d","Cd3e","Cd3g","Cd2"),
-             "Cd8T"=c("Cd3d","Cd3e","Cd3g","Cd2","Cd8a","Cd8b1","Cd4-"),
-             "Stromal"= c("Mmp2","Col1a1","Col1a2","Col5a1","Lum","Pdgfra"),
-             "Bcell" = c("Ms4a1","Bank1","Pax5","Cd19"),
-             "NK" = c("Klrd1","Nkg7","Ncr1","Cd3d-","Cd3e-"),
-             "MoMacDC" = c("Lyz1","Lyz2","Csf1r","Msr1","Mafb","Cd300e")
-             )
 
-cycling.g1 <- scGate::genes.blacklist.default$Mm$cellCycle.G1S
-cycling.g2 <- scGate::genes.blacklist.default$Mm$cellCycle.G2M
-cycling <- c(cycling.g1, cycling.g2)
-
-sigs$cycling = cycling
-
-merged <- AddModuleScore_UCell(merged, features = sigs, name=NULL, ncores=4)
-
-```
-
-```{r}
-FeaturePlot(merged, features=c("Immune","Myeloid","Tcell","Cd8T"))
-FeaturePlot(merged, features=c("Bcell","NK","Stromal","cycling"))
-```
-Some NK contaminants went through?
-```{r fig.height=2.5}
-FeaturePlot(merged, features=c("Klrd1","Nkg7","Ncr1","Ncam1","Cd3d","Cd3e"), ncol=3)
-
-FeaturePlot(merged, features=c("Top2a","Mki67","Gzmb","Gzmk","Havcr2","Tcf7"), ncol=3)
-```
-
-Expression of typical Tex markers
-```{r fig.height=4, fig.width=2}
+Expression of typical Tex/Tem markers
+```{r fig.height=1.5, fig.width=5}
 Idents(merged) <- "functional.cluster"
-VlnPlot(merged, features=c("Havcr2","Pdcd1","Lag3","Tox","Gzmb","Gzmk","Tcf7","Ccr7","Mki67","Top2a"), pt.size = 0, stack = T, flip = T)
+VlnPlot(merged, features=c("HAVCR2","PDCD1","LAG3","TOX","GZMB","GZMK","IL7R","CCR7","MKI67","TOP2A","CXCL13"), 
+        pt.size = 0, stack = T, flip = F, cols=palette, fill.by = "ident")
 ```
 
-
-Automatic detection using scGate
-```{r}
-models <- scGate::get_scGateDB()
-
-gated <- scGate(merged, model = models$mouse$generic$CD8T)
-scGate::plot_levels(gated)
-```
-
-Potentially ~10% of non-T cells that should be removed (mostly NKs, but also a few myeloid cells).
-```{r}
-gated <- subset(gated, subset=is.pure=="Pure")
-gated
-```
-
-
-```{r}
-#Remove sample lung_1 ?
-rem_lung1 <- T
-if (rem_lung1) {
-   gated <- subset(gated, subset = cancer.type != "Lung_1")
-}
-```
 
 Find DEGs
 ```{r}
-markers <- FindMarkers(gated, group.by = "functional.cluster",  
+markers <- FindMarkers(merged, group.by = "functional.cluster",  
                        min.diff.pct = 0.2,
                     #   min.pct = 0.5,
                        ident.1 = "CD8_Tex", ident.2 = "CD8_EffectorMemory")
@@ -136,66 +120,82 @@ markers <- subset(markers, subset = p_val <= 0.05)
 head(markers)
 dim(markers)
 
-# Me quedo solo con los markers del volcano (> 0.5 y < -0.5)
 markers <- subset(markers, subset = abs(avg_log2FC) >= 0.5)
 
-EnhancedVolcano(markers, x = "avg_log2FC", y = "p_val_adj", lab = rownames(markers))
-
+#EnhancedVolcano(markers, x = "avg_log2FC", y = "p_val_adj", lab = rownames(markers))
 
 markers.list <- rownames(markers)
 ```
 
 Proteasomal genes
 ```{r}
-#proteasomal.genes <- c("Psma1","Psma2", "Psma3","Psma4","Psma5","Psma6","Psma7",
-#                  "Psma8","Psmb1","Psmb2","Psmb3","Psmb4","Psmb5","Psmb6","Psmb7",
-#                  "Psmb8","Psmb9","Psmb10","Psmc1","Psmc2","Psmc3","Psmc4","Psmc5",
-#                  "Psmc6","Psmd1","Psmd2","Psmd3","Psmd4","Psmd5","Psmd6","Psmd7",
-#                  "Psmd8","Psmd9","Psmd10","Psmd11","Psmd12","Psmd13","Psmd14",
-#                  "Sem1","Adrm1","Psme1","Psme2","Psme3","Psme4","Psmf1")
+#proteasomal.genes <- c("PSMA1","PSMA2", "PSMA3","PSMA4","PSMA5","PSMA6","PSMA7",
+#                  "PSMA8","PSMB1","PSMB2","PSMB3","PSMB4","PSMB5","PSMB6","PSMB7",
+#                  "PSMB8","PSMB9","PSMB10","PSMC1","PSMC2","PSMC3","PSMC4","PSMC5",
+#                  "PSMC6","PSMD1","PSMD2","PSMD3","PSMD4","PSMD5","PSMD6","PSMD7",
+#                  "PSMD8","PSMD9","PSMD10","PSMD11","PSMD12","PSMD13","PSMD14",
+#                  "Sem1","Adrm1","PSME1","PSME2","PSME3","PSME4","PSMF1")
 
 
-proteasomal.genes <- c("Psma1", "Psma2", "Psma3", "Psma4", "Psma5", "Psma6", "Psma7",
-                       "Psmb1", "Psmb2", "Psmb3", "Psmb4", "Psmb5", "Psmb6", "Psmb7",
-                       "Psmc1", "Psmc2", "Psmc3", "Psmc4", "Psmc5", "Psmc6",
-                       "Psmd1", "Psmd2", "Psmd3", "Psmd4", "Psmd6", "Psmd7", 
-                       "Psmd8", "Psmd11", "Psmd12", "Psmd13", "Psmd14")
+proteasomal.genes <- c("PSMA1", "PSMA2", "PSMA3", "PSMA4", "PSMA5", "PSMA6", "PSMA7",
+                       "PSMB1", "PSMB2", "PSMB3", "PSMB4", "PSMB5", "PSMB6", "PSMB7",
+                       "PSMC1", "PSMC2", "PSMC3", "PSMC4", "PSMC5", "PSMC6",
+                       "PSMD1", "PSMD2", "PSMD3", "PSMD4", "PSMD6", "PSMD7", 
+                       "PSMD8", "PSMD11", "PSMD12", "PSMD13", "PSMD14")
 
+```
+
+
+```{r fig.height=1.5, fig.width=8}
+Idents(merged) <- "functional.cluster"
+VlnPlot(merged, features=proteasomal.genes, 
+        pt.size = 0, stack = T, flip = F, cols=palette, fill.by = "ident")
 ```
 
 #Generate heatmap
 
 ```{r}
-DefaultAssay(gated) <- "RNA"
-pheatmap <- gated[proteasomal.genes,]
+library(RColorBrewer)
 
+#Using all datasets is messy. Make a selection
+dsets.use <- c("BCC.KathrynEYost2019","BCL.zhangLab5P","BC.Elham2018.10X","BC.zhangLab5P",
+               "UCEC.zhangLab5P","RC.zhangLab5P","MM.zhangLab5P")
+
+pheatmap <- subset(merged, subset=dataset %in% dsets.use)
+DefaultAssay(pheatmap) <- "RNA"
+
+pheatmap <- pheatmap[proteasomal.genes,]
 pheatmap_Tex <- subset(pheatmap, subset = functional.cluster == "CD8_Tex")
 pheatmap_Tem <- subset(pheatmap, subset = functional.cluster == "CD8_EffectorMemory")
-
 #Subset
 set.seed(1234)
 pheatmap_Tem <- pheatmap_Tem[, sample(colnames(pheatmap_Tem), size = ncol(pheatmap_Tex), replace=F)]
-
 pheatmap <- merge(pheatmap_Tem, pheatmap_Tex)
 
-DefaultAssay(pheatmap) <- "RNA"
 
-pheatmap <- NormalizeData(pheatmap, normalization.method = "LogNormalize", scale.factor = 10000)
+
+#pheatmap <- NormalizeData(pheatmap, normalization.method = "LogNormalize", scale.factor = 10000)
 pheatmap <- ScaleData(pheatmap, features = proteasomal.genes)
 
-anno_colors <- list(c("green3", "mediumblue"),
-                    c("orange1","snow3", "mediumorchid3","springgreen2"))
-             #       c("orange1","snow3", "mediumorchid3","springgreen2","yellow"))
+#Colors
+n_colors <- length(unique(merged$cancerType))
+palette_info <- brewer.pal.info[brewer.pal.info$category == "qual", ]
+palette_all <- unlist(mapply(brewer.pal,                 
+                              palette_info$maxcolors,
+                              rownames(palette_info)))
+
+anno_colors <- list(palette,
+              sample(palette_all, n_colors)) 
 
 #tiff('Heatmap.tiff', res=700, width = 5000, height = 4000, units='px', compression = 'lzw')
 plot_heatmap(dataset = pheatmap,
              row_font_size = 8,
              markers = proteasomal.genes,
-             sort_var = c("functional.cluster","cancer.type"),
-             anno_var = c("functional.cluster","cancer.type"),
+             sort_var = c("functional.cluster","cancerType"),
+             anno_var = c("functional.cluster","cancerType"),
              anno_colors = anno_colors,
-             hm_limit = c(-1,0,1),
-             hm_colors = c("green3", "white","mediumblue"))
+             hm_limit = c(-2,0,2),
+             hm_colors = c("red", "white","mediumblue"))
 ```
 
 
@@ -206,7 +206,7 @@ plot_heatmap(dataset = pheatmap,
 # Use all genes from the CD8A expressing T cells from the 4 studies included (withouth lung_1).
 
 ```{r}
-markers.genes <- wilcoxauc(X = gated, 'functional.cluster')
+markers.genes <- wilcoxauc(X = merged, 'functional.cluster')
 dplyr::count(markers.genes, group)
 
 markers.genes <- markers.genes %>%
@@ -214,8 +214,6 @@ markers.genes <- markers.genes %>%
   dplyr::filter(group == "CD8_Tex") %>%
   arrange(desc(logFC)) %>%
   dplyr::select(feature, logFC)           # select only the features with p< 0.05 and order by logFC.
-
-markers.genes$feature = toupper(markers.genes$feature)
 
 ranks<- deframe(markers.genes)
 head(ranks)
@@ -231,7 +229,7 @@ barplot(sort(ranks, decreasing = T))
 m_df<- msigdbr(species = "Homo sapiens", category = "H")
 head(m_df)
 
-fgsea_sets<- m_df %>% split(x = .$gene_symbol, f = .$gs_name)
+fgsea_sets <- m_df %>% split(x = .$gene_symbol, f = .$gs_name)
 
 # Run the analysis
 
@@ -258,47 +256,3 @@ plotEnrichment(fgsea_sets[[pathway]], ranks, ticksSize = 0.5, stats = T) +
 
 dev.off()
 ```
-
-####################################################
-######### Heatmap using reduced gene signature #########
-####################################################
-
-```{r}
-gene.signature <- c("Cxcr4", "Rbpj", "Rps27a", "Psmb2", "Ldha", "Rbx1", "Psmb8", "Eno1", "Pkm", "Psmc3", "Chchd2", "Pgk1")
-
-pheatmap2 <- gated[gene.signature,]
-
-pheatmap2_Tex <- subset(pheatmap2, subset = functional.cluster == "CD8_Tex")
-pheatmap2_Tem <- subset(pheatmap2, subset = functional.cluster == "CD8_EffectorMemory")
-
-pheatmap2_Tem <- pheatmap2_Tem[, sample(colnames(pheatmap2_Tem), size = ncol(pheatmap2_Tex), replace=F)]
-
-pheatmap2 <- merge(pheatmap2_Tem, pheatmap2_Tex)
-
-DefaultAssay(pheatmap2) <- "RNA"
-
-pheatmap2 <- NormalizeData(pheatmap2, normalization.method = "LogNormalize", scale.factor = 10000)
-pheatmap2 <- ScaleData(pheatmap2, features = gene.signature)
-
-#tiff('Heatmap_gene signature.tiff', res=700, width = 5000, height = 1500, units='px', compression = 'lzw')
-
-plot_heatmap(dataset = pheatmap2,
-             row_font_size = 8,
-             markers = gene.signature,
-             sort_var = c("functional.cluster","cancer.type"),
-             anno_var = c("functional.cluster","cancer.type"),
-             anno_colors = list(c("green3", "mediumblue"),
-                                c("orange1","snow3", "mediumorchid3","springgreen2")),
-             hm_limit = c(-1.5,0,1.5),
-             hm_colors = c("green3", "white","mediumblue"))
-
-#dev.off()
-
-violin <- VlnPlot(pheatmap, features = c("Sem1"), group.by = "functional.cluster")
-violin$data
-#write.xlsx2(violin$data, "human proteasome gene expression-chaperones.xlsx", sheetName = "Psmf1", append= TRUE)
-
-```
-
-
-
