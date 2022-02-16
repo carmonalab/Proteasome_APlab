@@ -42,26 +42,28 @@ data.use <- lapply(data.list, function(x) {
   x
 })
 
-#Only keep studies with a minimum number of cells
-min.cells <- 500
-ncells <- unlist(lapply(data.use, ncol))
-data.use <- data.use[ncells > min.cells]
-
-#Downsample overrepresented sets
+#Downsample overrepresented sets (max 500 Tex / Tem per sample)
 data.use <- lapply(data.use, function(x) {
-  Idents(x) <- "functional.cluster"
-  subset(x, cells=WhichCells(x,downsample=3000))
+  x.l <- SplitObject(x, split.by="patient")
+  x.l <- lapply(x.l, function(s) {
+     Idents(s) <- "functional.cluster"
+     subset(s, cells=WhichCells(s,downsample=500))
+  })
+  
+  #Only keep samples with a minimum number of cells
+  min.cells <- 50
+  ncells <- unlist(lapply(x.l, ncol))
+  x.l <- x.l[ncells > min.cells]
+  
+  Reduce(f=merge, x=x.l)
 })
 
-#Merge data
-merged <- Reduce(f=merge, x=data.use)
+#Remove NULL elements
+data.use[sapply(data.use, is.null)] <- NULL
 
-saveRDS(merged, file="aux/Zheng.seurat.gated.annotated.Tex_Tem.merged.rds")
-merged <- readRDS("aux/Zheng.seurat.gated.annotated.Tex_Tem.merged.rds")
-
-table(merged$dataset, merged$functional.cluster)
 ```
-Calculate dimensionality reductions
+
+Calculate variable features per study reductions
 ```{r}
 set.seed(12345)
 ndim=10
@@ -80,8 +82,22 @@ s <- names(sort(table(unlist(varfeat)), decreasing = T))
 s <- s[!s %in% blist]
 
 var.use <- head(s, ntot)
+```
+
+Merge data
+```{r}
+merged <- Reduce(f=merge, x=data.use)
+
+table(merged$dataset, merged$functional.cluster)
+
 merged@assays$RNA@var.features <- var.use
 
+saveRDS(merged, file="aux/Zheng.seurat.gated.annotated.Tex_Tem.merged.rds")
+merged <- readRDS("aux/Zheng.seurat.gated.annotated.Tex_Tem.merged.rds")
+```
+
+Dimensionality reductions
+```{r}
 merged <- ScaleData(merged, do.scale = TRUE, do.center = TRUE) 
 merged <- RunPCA(object = merged, features = var.use, ndims.print = 1:5, nfeatures.print = 10, npcs = ndim)
 merged <- RunUMAP(merged, reduction = "pca", dims = 1:ndim, seed.use=123)
@@ -104,21 +120,26 @@ FeaturePlot(merged, features=c("HAVCR2","TOX","PDCD1","IL7R","CCR7","LAG3"), nco
 Expression of typical Tex/Tem markers
 ```{r fig.height=1.5, fig.width=5}
 Idents(merged) <- "functional.cluster"
-VlnPlot(merged, features=c("HAVCR2","PDCD1","LAG3","TOX","GZMB","GZMK","IL7R","CCR7","MKI67","TOP2A","CXCL13"), 
+VlnPlot(merged, features=c("HAVCR2","PDCD1","LAG3","TOX","GZMB","GZMK","GZMM","ANXA1","IL7R","CCR7","MKI67","TOP2A","CXCL13"), 
         pt.size = 0, stack = T, flip = F, cols=palette, fill.by = "ident")
 ```
 
+```{r}
+VlnPlot(merged, features=c("nFeature_RNA","nCount_RNA"), pt.size=0, cols = palette)
+```
 
 Find DEGs
 ```{r}
 markers <- FindMarkers(merged, group.by = "functional.cluster",  
-                       min.diff.pct = 0.2,
+                       min.diff.pct = 0.1,
                     #   min.pct = 0.5,
                        ident.1 = "CD8_Tex", ident.2 = "CD8_EffectorMemory")
 
 markers <- subset(markers, subset = p_val <= 0.05)
 head(markers)
 dim(markers)
+
+markers[markers$avg_log2FC < 0,]
 
 markers <- subset(markers, subset = abs(avg_log2FC) >= 0.5)
 
@@ -154,49 +175,80 @@ VlnPlot(merged, features=proteasomal.genes,
 
 #Generate heatmap
 
+Calculate average expression per sample (patient)
 ```{r}
 library(RColorBrewer)
 
 #Using all datasets is messy. Make a selection
-dsets.use <- c("BCC.KathrynEYost2019","BCL.zhangLab5P","BC.Elham2018.10X","BC.zhangLab5P",
-               "UCEC.zhangLab5P","RC.zhangLab5P","MM.zhangLab5P")
+dsets.use <- c("BCC.KathrynEYost2019","THCA.zhangLab5P","BC.Elham2018.10X","BC.zhangLab5P", "HCC.YaoHe10X",
+               "UCEC.zhangLab5P","RC.zhangLab5P","MM.zhangLab5P","BC.Elham2018.10X", "OV.zhangLab5P", "STAD.BoxiKang2019",
+               "SCC.KathrynEYost2019","FTC.zhangLab5P","RC.MatthewDYoung2018","ESCA.zhangLab5P")
 
-pheatmap <- subset(merged, subset=dataset %in% dsets.use)
-DefaultAssay(pheatmap) <- "RNA"
+data.heat <- merged
+data.heat <- subset(data.heat, subset=dataset %in% dsets.use)
 
-pheatmap <- pheatmap[proteasomal.genes,]
-pheatmap_Tex <- subset(pheatmap, subset = functional.cluster == "CD8_Tex")
-pheatmap_Tem <- subset(pheatmap, subset = functional.cluster == "CD8_EffectorMemory")
-#Subset
-set.seed(1234)
-pheatmap_Tem <- pheatmap_Tem[, sample(colnames(pheatmap_Tem), size = ncol(pheatmap_Tex), replace=F)]
-pheatmap <- merge(pheatmap_Tem, pheatmap_Tex)
+DefaultAssay(data.heat) <- "RNA"
 
+data.heat$dataset_patient <- paste0(data.heat$dataset, "@", data.heat$patient)
+data.heat$subset_dataset_patient <- paste0(data.heat$functional.cluster, "@", data.heat$dataset_patient)
 
-
-#pheatmap <- NormalizeData(pheatmap, normalization.method = "LogNormalize", scale.factor = 10000)
-pheatmap <- ScaleData(pheatmap, features = proteasomal.genes)
-
-#Colors
-n_colors <- length(unique(merged$cancerType))
-palette_info <- brewer.pal.info[brewer.pal.info$category == "qual", ]
-palette_all <- unlist(mapply(brewer.pal,                 
-                              palette_info$maxcolors,
-                              rownames(palette_info)))
-
-anno_colors <- list(palette,
-              sample(palette_all, n_colors)) 
-
-#tiff('Heatmap.tiff', res=700, width = 5000, height = 4000, units='px', compression = 'lzw')
-plot_heatmap(dataset = pheatmap,
-             row_font_size = 8,
-             markers = proteasomal.genes,
-             sort_var = c("functional.cluster","cancerType"),
-             anno_var = c("functional.cluster","cancerType"),
-             anno_colors = anno_colors,
-             hm_limit = c(-2,0,2),
-             hm_colors = c("red", "white","mediumblue"))
 ```
+
+Make heatmap
+```{r}
+make.heatmap <- function(data, assay="RNA", genes, method=c("ward.D", "average"), brewer.palette="PRGn") {
+  
+  library(pheatmap)
+  set.seed(123)
+  #Calculate mean expression by subset
+  m <- c()
+  for( g in unique(genes)){
+    m[[g]] <- tapply(data@assays[[assay]][g,],data$subset_dataset_patient, mean)
+  }
+  m <- as.data.frame(m)
+
+  m.study <- factor(unlist(lapply(strsplit(rownames(m),"@",perl = T),function(x) x[[2]])))
+  m.subset <- factor(unlist(lapply(strsplit(rownames(m),"@",perl = T),function(x) x[[1]])))
+
+  breaksList = seq(-2, 2, by = 0.1)
+  color = colorRampPalette(rev(brewer.pal(n = 7, name = brewer.palette)))(length(breaksList))
+
+  gaps_col <- (which(!duplicated(m.subset))-1)[-1]
+
+  annotation_col = data.frame(
+                    Study = m.study, 
+                    TIL_Subtype = m.subset
+                )
+  rownames(annotation_col) = rownames(m)
+
+  palette <- c("#53B400","#edbe2a")
+  names(palette) <- levels(m.subset)
+
+  h <- pheatmap::pheatmap(t(m),cluster_rows = F,
+                          cluster_cols = F,scale = "row",
+                          breaks = breaksList, color=color, 
+                          annotation_col = annotation_col, 
+                          gaps_col=gaps_col,show_colnames = F,
+                          annotation_colors = list(TIL_Subtype=palette), 
+                          fontsize_row=6,fontsize = 7, 
+                          clustering_method=method)
+  
+  return(h)
+}
+```
+
+```{r}
+library(pheatmap)
+h <- make.heatmap(data.heat, genes=proteasomal.genes, brewer.palette = "PiYG")
+ggsave("plots/heatmap.avg.expression.proteasomal.genes.pdf", plot=h, height=4.5, width=8)
+
+markers <- c("HAVCR2","PDCD1","LAG3","TOX","CXCL13","GZMB","IFNG","IL7R","GZMK","GZMM","ANXA1","CCL5")
+h <- make.heatmap(data.heat, genes=markers, brewer.palette = "PiYG")
+ggsave("plots/heatmap.avg.expression.marker.genes.pdf", plot=h, height=2.5, width=8)
+
+```
+
+
 
 
 ######################################################################################
