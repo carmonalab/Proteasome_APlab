@@ -350,6 +350,28 @@
         "matrixStats"
       ]
     },
+    "ProjecTILs": {
+      "Package": "ProjecTILs",
+      "Version": "2.0.3",
+      "Source": "GitHub",
+      "RemoteType": "github",
+      "RemoteHost": "api.github.com",
+      "RemoteRepo": "ProjecTILs",
+      "RemoteUsername": "carmonalab",
+      "RemoteRef": "518bd89",
+      "RemoteSha": "518bd892934a9554710a6acd60559d9c341c2477",
+      "Hash": "b16dc02b879dc3dc022169113567c399",
+      "Requirements": [
+        "BiocParallel",
+        "Matrix",
+        "Seurat",
+        "ggplot2",
+        "gridExtra",
+        "reshape2",
+        "scGate",
+        "umap"
+      ]
+    },
     "R6": {
       "Package": "R6",
       "Version": "2.5.1",
@@ -1802,6 +1824,18 @@
       "Hash": "11359a5bb73622ab3f4136bf57108b64",
       "Requirements": []
     },
+    "pheatmap": {
+      "Package": "pheatmap",
+      "Version": "1.0.12",
+      "Source": "Repository",
+      "Repository": "CRAN",
+      "Hash": "db1fb0021811b6693741325bbe916e58",
+      "Requirements": [
+        "RColorBrewer",
+        "gtable",
+        "scales"
+      ]
+    },
     "pillar": {
       "Package": "pillar",
       "Version": "1.7.0",
@@ -2394,6 +2428,19 @@
         "xfun"
       ]
     },
+    "umap": {
+      "Package": "umap",
+      "Version": "0.2.7.0",
+      "Source": "Repository",
+      "Repository": "CRAN",
+      "Hash": "4c6d6bac2aef2998ce382d05de14f427",
+      "Requirements": [
+        "RSpectra",
+        "Rcpp",
+        "openssl",
+        "reticulate"
+      ]
+    },
     "utf8": {
       "Package": "utf8",
       "Version": "1.2.2",
@@ -2438,6 +2485,18 @@
       "Repository": "CRAN",
       "Hash": "ea85683da7f2bfa63a98dc6416892591",
       "Requirements": []
+    },
+    "viridis": {
+      "Package": "viridis",
+      "Version": "0.6.2",
+      "Source": "Repository",
+      "Repository": "CRAN",
+      "Hash": "ee96aee95a7a563e5496f8991e9fde4b",
+      "Requirements": [
+        "ggplot2",
+        "gridExtra",
+        "viridisLite"
+      ]
     },
     "viridisLite": {
       "Package": "viridisLite",

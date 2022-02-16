@@ -15,7 +15,6 @@ library(Seurat)
 library(UCell)
 library(scGate)
 library(EnhancedVolcano)
-library(Scillus)
 library(msigdbr)
 library(presto)
 library(tibble)
@@ -51,8 +50,8 @@ data.use <- lapply(data.use, function(x) {
   })
   
   #Only keep samples with a minimum number of cells
-  min.cells <- 50
-  ncells <- unlist(lapply(x.l, ncol))
+  min.cells <- 30
+  ncells <- unlist(lapply(x.l, function(x){min(table(x$functional.cluster))}))
   x.l <- x.l[ncells > min.cells]
   
   Reduce(f=merge, x=x.l)
@@ -122,6 +121,9 @@ Expression of typical Tex/Tem markers
 Idents(merged) <- "functional.cluster"
 VlnPlot(merged, features=c("HAVCR2","PDCD1","LAG3","TOX","GZMB","GZMK","GZMM","ANXA1","IL7R","CCR7","MKI67","TOP2A","CXCL13"), 
         pt.size = 0, stack = T, flip = F, cols=palette, fill.by = "ident")
+
+ggsave("plots/violin.Tex.vs.EM.markers.pdf", height=3, width=10)
+
 ```
 
 ```{r}
@@ -139,7 +141,7 @@ markers <- subset(markers, subset = p_val <= 0.05)
 head(markers)
 dim(markers)
 
-markers[markers$avg_log2FC < 0,]
+#markers[markers$avg_log2FC < 0,]
 
 markers <- subset(markers, subset = abs(avg_log2FC) >= 0.5)
 
@@ -171,6 +173,8 @@ proteasomal.genes <- c("PSMA1", "PSMA2", "PSMA3", "PSMA4", "PSMA5", "PSMA6", "PS
 Idents(merged) <- "functional.cluster"
 VlnPlot(merged, features=proteasomal.genes, 
         pt.size = 0, stack = T, flip = F, cols=palette, fill.by = "ident")
+
+ggsave("plots/violin.Tex.vs.EM.protease.pdf", height=3, width=18)
 ```
 
 #Generate heatmap
@@ -178,13 +182,17 @@ VlnPlot(merged, features=proteasomal.genes,
 Calculate average expression per sample (patient)
 ```{r}
 library(RColorBrewer)
+data.heat <- merged
 
 #Using all datasets is messy. Make a selection
-dsets.use <- c("BCC.KathrynEYost2019","THCA.zhangLab5P","BC.Elham2018.10X","BC.zhangLab5P", "HCC.YaoHe10X",
-               "UCEC.zhangLab5P","RC.zhangLab5P","MM.zhangLab5P","BC.Elham2018.10X", "OV.zhangLab5P", "STAD.BoxiKang2019",
-               "SCC.KathrynEYost2019","FTC.zhangLab5P","RC.MatthewDYoung2018","ESCA.zhangLab5P")
+dsets.use <- c("BCC.KathrynEYost2019","BCL.zhangLab5P","BC.Elham2018.10X","BC.Elham2018.Indrop",
+               "BC.Peter2018","BC.zhangLab5P","CRC.ZiyiLi10X",
+               "ESCA.zhangLab5P","FTC.zhangLab5P","HCC.YaoHe10X","LUNG.Diether2018",
+               "LUNG.QianqianSong2019","LUNG.RapolasZilionis2019",
+               "MM.zhangLab5P",
+               "NPC.XiliangWang2019","OV.zhangLab5P","PACA.zhangLab5P","RC.MatthewDYoung2018",
+               "RC.zhangLab5P","SCC.KathrynEYost2019","STAD.BoxiKang2019","THCA.zhangLab5P","UCEC.zhangLab5P") 
 
-data.heat <- merged
 data.heat <- subset(data.heat, subset=dataset %in% dsets.use)
 
 DefaultAssay(data.heat) <- "RNA"
@@ -240,11 +248,11 @@ make.heatmap <- function(data, assay="RNA", genes, method=c("ward.D", "average")
 ```{r}
 library(pheatmap)
 h <- make.heatmap(data.heat, genes=proteasomal.genes, brewer.palette = "PiYG")
-ggsave("plots/heatmap.avg.expression.proteasomal.genes.pdf", plot=h, height=4.5, width=8)
+ggsave("plots/heatmap.avg.expression.proteasomal.genes.pdf", plot=h, height=4.5, width=10)
 
-markers <- c("HAVCR2","PDCD1","LAG3","TOX","CXCL13","GZMB","IFNG","IL7R","GZMK","GZMM","ANXA1","CCL5")
+markers <- c("HAVCR2","PDCD1","LAG3","TOX","TOX2","ENTPD1","CTLA4","CXCL13","GZMB","IL7R","TCF7","GZMK","GZMM","ANXA1","CCL5")
 h <- make.heatmap(data.heat, genes=markers, brewer.palette = "PiYG")
-ggsave("plots/heatmap.avg.expression.marker.genes.pdf", plot=h, height=2.5, width=8)
+ggsave("plots/heatmap.avg.expression.marker.genes.pdf", plot=h, height=4, width=10)
 
 ```
 
@@ -306,5 +314,5 @@ plotEnrichment(fgsea_sets[[pathway]], ranks, ticksSize = 0.5, stats = T) +
 
 #tiff('Panel GSEA.tiff', res=700, width = 3000, height = 1300, units='px', compression = 'lzw')
 
-dev.off()
+#dev.off()
 ```

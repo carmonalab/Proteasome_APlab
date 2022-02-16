@@ -67,13 +67,11 @@ seurat.list <- lapply(X = seq_along(data.list),
                         r <- as.Seurat(data.list[[i]], counts = counts.slot, data = "norm_exprs", project=study.name)
                         r <- RenameCells(r, add.cell.id = study.id)
                         
-                        #Rescale flagged datasets 
-                        #Data seems to be normalized in inconsistent way. Most datasets have expression of e.g. CD8A
-                        #of ~3 on average, another subset of ~9 on average. Try to correct
-                        mean <- mean(r@assays$RNA@data["CD8A",])
-                        if (mean > 5) {
-                           r@assays$RNA@data <- r@assays$RNA@data/3   #dirty, but the data was not consistently normalized
-                        }
+                        
+                        #mean <- mean(r@assays$RNA@data["CD8A",])
+                        #if (mean > 5) {
+                        #   r@assays$RNA@data <- r@assays$RNA@data/3   #dirty, but the data was not consistently normalized
+                        #}
 
                         r
                     })
@@ -81,11 +79,6 @@ names(seurat.list) <- names(data.list)
 
 rm(data.list)  #free up memory
 gc()
-```
-
-```{r}
-saveRDS(seurat.list, "aux/Zheng.seurat.list.rds")
-seurat.list <- readRDS("aux/Zheng.seurat.list.rds")
 ```
 
 Check distributions of normalized counts
@@ -103,6 +96,39 @@ pll <- lapply(names(seurat.list),
           ggplot(df, aes(x=norm.data)) + geom_histogram(bins=50) + ggtitle(x)
        })
 wrap_plots(pll)
+```
+#Rescale flagged datasets 
+Data seems to be normalized in inconsistent way. Most datasets have expression of e.g. CD8A
+of ~3 on average, another subset of ~9 on average. Try to correct by measuring 90% percentile of key genes
+
+```{r  fig.height=8, fig.width=12}
+ref.factor <- 3
+seurat.list <- lapply(seurat.list,
+       function(x){
+          df <- data.frame(x@assays$RNA@data[c("CD2","CD3E","CD3G","CD3D","CD8A","CD8B","PTPRC"),])
+          q90 <- apply(df, 1, function(i){quantile(i, c(0.9))[1]})
+          q90.mean <- mean(q90)
+          print(sprintf("%s - %.3f", unique(x$dataset)[1], q90.mean))
+          
+          factor <- ref.factor / q90.mean
+          #Rescale data with correction factor
+          x@assays$RNA@data <- factor * x@assays$RNA@data
+          x
+       })
+```
+
+```{r fig.height=5, fig.width=8}
+pll <- lapply(names(seurat.list),
+       function(x){
+          df <- data.frame(norm.data = seurat.list[[x]]@assays$RNA@data["CD8A",])
+          ggplot(df, aes(x=norm.data)) + geom_histogram(bins=50) + ggtitle(x)
+       })
+wrap_plots(pll)
+```
+
+```{r}
+saveRDS(seurat.list, "aux/Zheng.seurat.list.rds")
+seurat.list <- readRDS("aux/Zheng.seurat.list.rds")
 ```
 
 
