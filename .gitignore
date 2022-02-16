@@ -1,5 +1,8 @@
 input/
 data/
+plots/
+aux/
+.Rhistory
 .Rproj.user
 renv/
 .Rprofile
