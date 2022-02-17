@@ -95,6 +95,13 @@ saveRDS(merged, file="aux/Zheng.seurat.gated.annotated.Tex_Tem.merged.rds")
 merged <- readRDS("aux/Zheng.seurat.gated.annotated.Tex_Tem.merged.rds")
 ```
 
+Label (and split?) by technology
+```{r}
+merged$tech.type <- "UMI"
+merged$tech.type[merged$dataset %in% c("CRC.zhangLabSS2","HCC.zhangLabSS2","LUNG.zhangLabSS2",
+                                  "Melanoma.LivnatJerby-Arnon2018","Melanoma.MosheSade-Feldman2018")] <- "TPM"
+```
+
 Dimensionality reductions
 ```{r}
 merged <- ScaleData(merged, do.scale = TRUE, do.center = TRUE) 
@@ -108,47 +115,45 @@ Have a look of the data
 palette <- c("#53B400","#edbe2a")
 DimPlot(merged, group.by = "dataset") + theme(aspect.ratio=1) + ggtitle("By study")
 DimPlot(merged, group.by = "functional.cluster", cols=palette) + theme(aspect.ratio=1) + ggtitle("ProjecTILs annotation")
+DimPlot(merged, group.by = "tech.type") + theme(aspect.ratio=1) + ggtitle("Technology")
+
 
 FeaturePlot(merged, features=c("CD2","CD8A","CD8B","CD4","CD3G","CD3E"), ncol=3)
 FeaturePlot(merged, features=c("CD3D","LCK","SPI1","MS4A1","KLRB1","NCAM1"), ncol=3)
 FeaturePlot(merged, features=c("CXCL13","FOS","CCL3","CCL5","GZMB","GZMK"), ncol=3)
 FeaturePlot(merged, features=c("HAVCR2","TOX","PDCD1","IL7R","CCR7","LAG3"), ncol=3)
 ```
+Split by technology
+```{r}
+merged.tech <- SplitObject(merged, split.by = "tech.type")
 
+#exclude Li et al. dataset 
+merged.tech$UMI <- subset(merged.tech$UMI, subset=dataset=="Melanoma.HanjieLi2018", invert=T)  
+```
 
 Expression of typical Tex/Tem markers
 ```{r fig.height=1.5, fig.width=5}
 Idents(merged) <- "functional.cluster"
-VlnPlot(merged, features=c("HAVCR2","PDCD1","LAG3","TOX","GZMB","GZMK","GZMM","ANXA1","IL7R","CCR7","MKI67","TOP2A","CXCL13"), 
+VlnPlot(merged, features=c("HAVCR2","PDCD1","LAG3","TOX","MKI67","CXCL13","GZMB","GZMK","GZMM","ANXA1","IL7R","TCF7"), 
         pt.size = 0, stack = T, flip = F, cols=palette, fill.by = "ident")
 
 ggsave("plots/violin.Tex.vs.EM.markers.pdf", height=3, width=10)
+```
 
+```{r fig.height=3, fig.width=5}
+a <- VlnPlot(merged.tech$UMI, features=c("HAVCR2","PDCD1","LAG3","TOX","MKI67","CXCL13","GZMB","GZMK","GZMM","ANXA1","IL7R","TCF7"), 
+        pt.size = 0, stack = T, flip = F, cols=palette, fill.by = "ident")
+
+b <- VlnPlot(merged.tech$TPM, features=c("HAVCR2","PDCD1","LAG3","TOX","MKI67","CXCL13","GZMB","GZMK","GZMM","ANXA1","IL7R","TCF7"), 
+        pt.size = 0, stack = T, flip = F, cols=palette, fill.by = "ident")
+
+a / b
 ```
 
 ```{r}
 VlnPlot(merged, features=c("nFeature_RNA","nCount_RNA"), pt.size=0, cols = palette)
 ```
 
-Find DEGs
-```{r}
-markers <- FindMarkers(merged, group.by = "functional.cluster",  
-                       min.diff.pct = 0.1,
-                    #   min.pct = 0.5,
-                       ident.1 = "CD8_Tex", ident.2 = "CD8_EffectorMemory")
-
-markers <- subset(markers, subset = p_val <= 0.05)
-head(markers)
-dim(markers)
-
-#markers[markers$avg_log2FC < 0,]
-
-markers <- subset(markers, subset = abs(avg_log2FC) >= 0.5)
-
-#EnhancedVolcano(markers, x = "avg_log2FC", y = "p_val_adj", lab = rownames(markers))
-
-markers.list <- rownames(markers)
-```
 
 Proteasomal genes
 ```{r}
@@ -177,31 +182,19 @@ VlnPlot(merged, features=proteasomal.genes,
 ggsave("plots/violin.Tex.vs.EM.protease.pdf", height=3, width=18)
 ```
 
+```{r fig.height=2.5, fig.width=8}
+a <- VlnPlot(merged.tech$UMI, features=proteasomal.genes, 
+        pt.size = 0, stack = T, flip = F, cols=palette, fill.by = "ident")
+
+b <- VlnPlot(merged.tech$TPM, features=proteasomal.genes, 
+        pt.size = 0, stack = T, flip = F, cols=palette, fill.by = "ident")
+
+a / b
+```
+
 #Generate heatmap
 
 Calculate average expression per sample (patient)
-```{r}
-library(RColorBrewer)
-data.heat <- merged
-
-#Using all datasets is messy. Make a selection
-dsets.use <- c("BCC.KathrynEYost2019","BCL.zhangLab5P","BC.Elham2018.10X","BC.Elham2018.Indrop",
-               "BC.Peter2018","BC.zhangLab5P","CRC.ZiyiLi10X",
-               "ESCA.zhangLab5P","FTC.zhangLab5P","HCC.YaoHe10X","LUNG.Diether2018",
-               "LUNG.QianqianSong2019","LUNG.RapolasZilionis2019",
-               "MM.zhangLab5P",
-               "NPC.XiliangWang2019","OV.zhangLab5P","PACA.zhangLab5P","RC.MatthewDYoung2018",
-               "RC.zhangLab5P","SCC.KathrynEYost2019","STAD.BoxiKang2019","THCA.zhangLab5P","UCEC.zhangLab5P") 
-
-data.heat <- subset(data.heat, subset=dataset %in% dsets.use)
-
-DefaultAssay(data.heat) <- "RNA"
-
-data.heat$dataset_patient <- paste0(data.heat$dataset, "@", data.heat$patient)
-data.heat$subset_dataset_patient <- paste0(data.heat$functional.cluster, "@", data.heat$dataset_patient)
-
-```
-
 Make heatmap
 ```{r}
 make.heatmap <- function(data, assay="RNA", genes, method=c("ward.D", "average"), brewer.palette="PRGn") {
@@ -245,16 +238,45 @@ make.heatmap <- function(data, assay="RNA", genes, method=c("ward.D", "average")
 }
 ```
 
+
+Note that data distributions are very different between technologies ("UMI" technologies (inDrop, 10x) vs. "TMP" technologies (e.g. SS2)). Perform the
+metanalyses separately for the two technologies
 ```{r}
+library(RColorBrewer)
+
+#Make metanalysis on UMI-type technologies
+data.heat <- merged.tech$UMI
+
+DefaultAssay(data.heat) <- "RNA"
+
+data.heat$dataset_patient <- paste0(data.heat$dataset, "@", data.heat$patient)
+data.heat$subset_dataset_patient <- paste0(data.heat$functional.cluster, "@", data.heat$dataset_patient)
+
 library(pheatmap)
 h <- make.heatmap(data.heat, genes=proteasomal.genes, brewer.palette = "PiYG")
-ggsave("plots/heatmap.avg.expression.proteasomal.genes.pdf", plot=h, height=4.5, width=10)
+ggsave("plots/heatmap.avg.expression.proteasomal.genes.UMI.pdf", plot=h, height=6, width=13)
 
 markers <- c("HAVCR2","PDCD1","LAG3","TOX","TOX2","ENTPD1","CTLA4","CXCL13","GZMB","IL7R","TCF7","GZMK","GZMM","ANXA1","CCL5")
 h <- make.heatmap(data.heat, genes=markers, brewer.palette = "PiYG")
-ggsave("plots/heatmap.avg.expression.marker.genes.pdf", plot=h, height=4, width=10)
+ggsave("plots/heatmap.avg.expression.marker.genes.UMI.pdf", plot=h, height=4, width=13)
 
 ```
+Can we do the same on SS2 samples?
+```{r}
+data.heat <- merged.tech$TPM
+
+DefaultAssay(data.heat) <- "RNA"
+data.heat$dataset_patient <- paste0(data.heat$dataset, "@", data.heat$patient)
+data.heat$subset_dataset_patient <- paste0(data.heat$functional.cluster, "@", data.heat$dataset_patient)
+
+h <- make.heatmap(data.heat, genes=proteasomal.genes, brewer.palette = "PiYG")
+ggsave("plots/heatmap.avg.expression.proteasomal.genes.TPM.pdf", plot=h, height=6, width=10)
+
+markers <- c("HAVCR2","PDCD1","LAG3","TOX","TOX2","ENTPD1","CTLA4","CXCL13","GZMB","IL7R","TCF7","GZMK","GZMM","ANXA1","CCL5")
+h <- make.heatmap(data.heat, genes=markers, brewer.palette = "PiYG")
+ggsave("plots/heatmap.avg.expression.marker.genes.TPM.pdf", plot=h, height=4, width=10)
+```
+
 
 
 
@@ -263,7 +285,25 @@ ggsave("plots/heatmap.avg.expression.marker.genes.pdf", plot=h, height=4, width=
 ######### GSEA using all genes from the T cells extracted from the 4 studies #########
 ######################################################################################
 
-# Use all genes from the CD8A expressing T cells from the 4 studies included (withouth lung_1).
+Find DEGs
+```{r}
+markers <- FindMarkers(merged.tech$UMI, group.by = "functional.cluster",  
+                       min.diff.pct = 0.1,
+                       ident.1 = "CD8_Tex", ident.2 = "CD8_EffectorMemory")
+
+markers <- subset(markers, subset = p_val <= 0.05)
+head(markers)
+dim(markers)
+
+
+markers <- subset(markers, subset = abs(avg_log2FC) >= 0.5)
+
+#EnhancedVolcano(markers, x = "avg_log2FC", y = "p_val_adj", lab = rownames(markers))
+
+markers.list <- rownames(markers)
+```
+
+# Performs GSEA using genes overexpressed in Tex compared to Tem
 
 ```{r}
 markers.genes <- wilcoxauc(X = merged, 'functional.cluster')
