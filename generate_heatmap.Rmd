@@ -27,6 +27,7 @@ Load list of annotated datasets
 
 ```{r message=F, warning=F}
 ddir <- "./aux"
+set.seed(123)
 data.list <- readRDS(sprintf("%s/Zheng.seurat.gated.annotated.Tex_Tem.rds", ddir))
 
 data.use <- lapply(data.list, function(x) {
@@ -123,14 +124,6 @@ FeaturePlot(merged, features=c("CD3D","LCK","SPI1","MS4A1","KLRB1","NCAM1"), nco
 FeaturePlot(merged, features=c("CXCL13","FOS","CCL3","CCL5","GZMB","GZMK"), ncol=3)
 FeaturePlot(merged, features=c("HAVCR2","TOX","PDCD1","IL7R","CCR7","LAG3"), ncol=3)
 ```
-Split by technology
-```{r}
-merged.tech <- SplitObject(merged, split.by = "tech.type")
-
-#exclude Li et al. dataset 
-merged.tech$UMI <- subset(merged.tech$UMI, subset=dataset=="Melanoma.HanjieLi2018", invert=T)  
-```
-
 Expression of typical Tex/Tem markers
 ```{r fig.height=1.5, fig.width=5}
 Idents(merged) <- "functional.cluster"
@@ -139,6 +132,23 @@ VlnPlot(merged, features=c("HAVCR2","PDCD1","LAG3","TOX","MKI67","CXCL13","GZMB"
 
 ggsave("plots/violin.Tex.vs.EM.markers.pdf", height=3, width=10)
 ```
+
+Internal control
+Zheng's annotation
+```{r}
+merged$meta.cluster.coarse.TexTem <- NA
+merged$meta.cluster.coarse.TexTem[merged$meta.cluster.coarse %in% c("CD8.c09.Tex.CXCL13","CD8.c05.Tem.GZMK")] <- merged$meta.cluster.coarse[merged$meta.cluster.coarse %in% c("CD8.c09.Tex.CXCL13","CD8.c05.Tem.GZMK")]
+```
+
+Split by technology
+```{r}
+merged.tech <- SplitObject(merged, split.by = "tech.type")
+
+#exclude Li et al. dataset 
+merged.tech$UMI <- subset(merged.tech$UMI, subset=dataset=="Melanoma.HanjieLi2018", invert=T)  
+```
+
+
 
 ```{r fig.height=3, fig.width=5}
 a <- VlnPlot(merged.tech$UMI, features=c("HAVCR2","PDCD1","LAG3","TOX","MKI67","CXCL13","GZMB","GZMK","GZMM","ANXA1","IL7R","TCF7"), 
@@ -155,15 +165,32 @@ VlnPlot(merged, features=c("nFeature_RNA","nCount_RNA"), pt.size=0, cols = palet
 ```
 
 
-Proteasomal genes
-```{r}
-#proteasomal.genes <- c("PSMA1","PSMA2", "PSMA3","PSMA4","PSMA5","PSMA6","PSMA7",
-#                  "PSMA8","PSMB1","PSMB2","PSMB3","PSMB4","PSMB5","PSMB6","PSMB7",
-#                  "PSMB8","PSMB9","PSMB10","PSMC1","PSMC2","PSMC3","PSMC4","PSMC5",
-#                  "PSMC6","PSMD1","PSMD2","PSMD3","PSMD4","PSMD5","PSMD6","PSMD7",
-#                  "PSMD8","PSMD9","PSMD10","PSMD11","PSMD12","PSMD13","PSMD14",
-#                  "Sem1","Adrm1","PSME1","PSME2","PSME3","PSME4","PSMF1")
+Internal control Zheng's annotation
 
+```{r fig.height=3, fig.width=5}
+Idents(merged.tech$UMI) <- "meta.cluster.coarse.TexTem"
+
+a <- VlnPlot(merged.tech$UMI, features=c("HAVCR2","PDCD1","LAG3","TOX","MKI67","CXCL13","GZMB","GZMK","GZMM","ANXA1","IL7R","TCF7"), 
+        pt.size = 0, stack = T, flip = F, cols=palette, fill.by = "ident")
+
+Idents(merged.tech$UMI) <- "functional.cluster"
+
+Idents(merged.tech$TPM) <- "meta.cluster.coarse.TexTem"
+
+b <- VlnPlot(merged.tech$TPM, features=c("HAVCR2","PDCD1","LAG3","TOX","MKI67","CXCL13","GZMB","GZMK","GZMM","ANXA1","IL7R","TCF7"), 
+        pt.size = 0, stack = T, flip = F, cols=palette, fill.by = "ident")
+
+Idents(merged.tech$TPM) <- "functional.cluster"
+
+a / b
+
+```
+Technology biases are very similar for both ProjecTILs and Zheng's annotations
+
+
+
+Endika's Proteasomal gene set
+```{r}
 
 proteasomal.genes <- c("PSMA1", "PSMA2", "PSMA3", "PSMA4", "PSMA5", "PSMA6", "PSMA7",
                        "PSMB1", "PSMB2", "PSMB3", "PSMB4", "PSMB5", "PSMB6", "PSMB7",
@@ -239,8 +266,7 @@ make.heatmap <- function(data, assay="RNA", genes, method=c("ward.D", "average")
 ```
 
 
-Note that data distributions are very different between technologies ("UMI" technologies (inDrop, 10x) vs. "TMP" technologies (e.g. SS2)). Perform the
-metanalyses separately for the two technologies
+Note that data distributions are very different between technologies: "UMI", 5'/3' counting technologies (inDrop, 10x) vs. "TPM" non-UMI full-length RNA technologies (e.g. SS2)). Perform the metanalyses separately for the two technologies
 ```{r}
 library(RColorBrewer)
 
@@ -280,10 +306,9 @@ ggsave("plots/heatmap.avg.expression.marker.genes.TPM.pdf", plot=h, height=4, wi
 
 
 
-
-######################################################################################
-######### GSEA using all genes from the T cells extracted from the 4 studies #########
-######################################################################################
+#######################################
+######### GSEA using all DEG  #########
+#######################################
 
 Find DEGs
 ```{r}
