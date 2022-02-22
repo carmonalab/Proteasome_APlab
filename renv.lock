@@ -532,38 +532,6 @@
         "BiocGenerics"
       ]
     },
-    "Scillus": {
-      "Package": "Scillus",
-      "Version": "0.5.0",
-      "Source": "GitHub",
-      "RemoteType": "github",
-      "RemoteHost": "api.github.com",
-      "RemoteRepo": "Scillus",
-      "RemoteUsername": "xmc811",
-      "RemoteRef": "development",
-      "RemoteSha": "4e7884d29ba8997669ff848983257cb0cf37a318",
-      "Hash": "d3b92f10ef72dd011fd5d2df6626bff8",
-      "Requirements": [
-        "ComplexHeatmap",
-        "RColorBrewer",
-        "Seurat",
-        "circlize",
-        "data.table",
-        "dplyr",
-        "forcats",
-        "formattable",
-        "ggplot2",
-        "magrittr",
-        "patchwork",
-        "plyr",
-        "purrr",
-        "rlang",
-        "scales",
-        "stringr",
-        "tibble",
-        "tidyr"
-      ]
-    },
     "Seurat": {
       "Package": "Seurat",
       "Version": "4.1.0",
