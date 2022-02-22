@@ -423,6 +423,8 @@ gated.sub <- lapply(gated.ann, function(x) {
 saveRDS(gated.sub, "aux/Zheng.seurat.gated.annotated.Tex_Tem.rds")
 ```
 
+
+
 Show ProjecTILs annotations
 ```{r fig.height=6, fig.width=12}
 palette <- c("#edbe2a", "#A58AFF", "#53B400", "#F8766D", "#00B6EB")
@@ -437,4 +439,32 @@ wrap_plots(pll)
 ggsave("plots/Zheng.sets.by.functional.cluster.png", height=18, width=35)
 
 ```
+```{r}
+pll <- lapply(names(gated.ann),
+       FUN = function(x) {
+        tt <- t(table(zheng=gated.ann[[x]]$meta.cluster,projectils=gated.ann[[x]]$functional.cluster))
+        ggplot(data = melt(tt), aes(x=zheng, y=projectils, fill=value)) + geom_tile()  + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+         
+       })
 
+wrap_plots(pll)
+ggsave("plots/Zheng.vs.projectils.heatmaps.png", height=18, width=35)
+
+```
+
+```{r}
+pll <- lapply(names(gated.sub),
+       FUN = function(x) {
+        tt <- (table(zheng=gated.sub[[x]]$meta.cluster,projectils=gated.sub[[x]]$functional.cluster))
+        tt <- scale(tt,center = F, scale = colSums(tt))
+        tt <- melt(tt)
+        p <- ggplot(tt, aes(x = projectils, y = value, fill = zheng)) + 
+            geom_bar(stat = "identity") + theme_bw()  + 
+            theme(legend.position = "left") + ggtitle(x)
+       
+       })
+
+wrap_plots(pll)
+ggsave("plots/Zheng.vs.projectils.BARPLOT.Tex_T_EM.png", height=25, width=35)
+
+```
