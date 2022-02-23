@@ -73,13 +73,13 @@ myFeaturesUcell <- paste0(names(signatures),"_UCell")
 
 ```{r, fig.height=10, fig.width=10}
 cols.functional.cluster <- c("#53B400","#edbe2a")
-VlnPlot(data_seurat,features = myFeaturesUcell, pt.size = 0, stack = T, flip = T, cols = cols.functional.cluster, fill.by	
-="ident")
-ggsave("plots/signatures.vln.png", height=20, width=10)
+VlnPlot(data_seurat,features = myFeaturesUcell, pt.size = 0, stack = T, 
+        flip = T, cols = cols.functional.cluster, fill.by	="ident") + NoLegend()
+ggsave("plots/signatures.vln.by.subtype.pdf", height=14, width=6)
 
 ```
 
-```{r}
+```{r fig.height=6}
 pp <- list()
 pp[[length(pp)+1]] <- FeatureScatter(data_seurat,"EXHAUSTION_UCell","PROTEASOME_UCell", smooth = F, raster = T,cols = cols.functional.cluster, pt.size = 3) + theme(aspect.ratio=1)
 pp[[length(pp)+1]] <- FeatureScatter(data_seurat,"EXHAUSTION_UCell","HALLMARK_HYPOXIA_UCell", smooth = F, raster = T,cols = cols.functional.cluster, pt.size = 3) + theme(aspect.ratio=1)
@@ -99,7 +99,7 @@ Idents(data_seurat) <- "cancerType"
 FeatureScatter(data_seurat,"EXHAUSTION_UCell","PROTEASOME_UCell", smooth = T, raster = T) + theme(aspect.ratio=1)
 Idents(data_seurat) <- "functional.cluster"
 ```
-
+Scatter by cancer type
 ```{r}
 
 Idents(data_seurat) <- "cancerType"
@@ -129,7 +129,8 @@ EXHAUSTION and PROTEASOME_UCell always higher in Tex vs Tem
 
 Evaluate AUC on classification of Tex vs Tem
 ```{r}
-#data_seurat@meta.data$T_EX_sub_T_EM_UCell <- data_seurat@meta.data$T_EX_UCell-data_seurat@meta.data$T_EM_UCell #double signature for higher discrimination
+#combined signature for higher discrimination
+data_seurat$T_EX_sub_T_EM_UCell <- data_seurat$T_EX_UCell - data_seurat$T_EM_UCell
 
 selFeatures <- c("EXHAUSTION_UCell","PROTEASOME_UCell","HALLMARK_ROS_UCell","HALLMARK_HYPOXIA_UCell")
 #selFeatures <- c(myFeaturesUcell,"T_EX_sub_T_EM_UCell")
@@ -141,26 +142,39 @@ PROTEASOME_UCell AUC 0.68
 
 
 ```{r}
-ggplot(ww1,aes(x=feature,y=auc)) + geom_bar(stat="identity") + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) + 
-    coord_cartesian(ylim=c(0.5, 0.75))
-#+ ylim(c(0.5,1))
+ggplot(ww, aes(x=reorder(feature,-auc), y=auc)) + geom_bar(stat="identity") + theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1), 
+        axis.title.x=element_blank()) +
+  coord_cartesian(ylim=c(0.5, 0.75)) +
+  ggtitle("Prediction of T cell subtypes")
+
+ggsave("plots/auc.signatures.subtype.png", height=4, width=4)
 ```
 
 As a control, generate alternative cell classifications
 
 Based on canonical exhaustion features
 ```{r}
-data_seurat@meta.data$EXHAUSTION_UCell_HIGH <- ifelse(data_seurat@meta.data$EXHAUSTION_UCell>0.15,"EXHAUSTION_UCell_HIGH","EXHAUSTION_UCell_LOW")
-#data_seurat@meta.data$EXHAUSTION_UCell_HIGH <- ifelse(data_seurat@meta.data$EXHAUSTION_UCell>0.1,"EXHAUSTION_UCell_HIGH",ifelse(data_seurat@meta.data$EXHAUSTION_UCell==0,"EXHAUSTION_UCell_LOW",NA))
+data_seurat@meta.data$EXHAUSTION_UCell_HIGH <- ifelse(data_seurat@meta.data$EXHAUSTION_UCell>0.15,
+                                                      "EXHAUSTION_UCell_HIGH",
+                                                      "EXHAUSTION_UCell_LOW")
+
 table(data_seurat@meta.data$EXHAUSTION_UCell_HIGH)
 ```
 
 ```{r}
-selFeatures <- c("T_EX_sub_T_EM_UCell","EXHAUSTION_UCell","PROTEASOME_UCell","HALLMARK_ROS_UCell","HALLMARK_HYPOXIA_UCell")
-w <- wilcoxauc(t(data_seurat@meta.data[,selFeatures]),y=data_seurat$EXHAUSTION_UCell_HIGH)
+selFeatures <- c("EXHAUSTION_UCell","PROTEASOME_UCell","HALLMARK_ROS_UCell","HALLMARK_HYPOXIA_UCell")
+w <- wilcoxauc(t(data_seurat@meta.data[,selFeatures]), y=data_seurat$EXHAUSTION_UCell_HIGH)
 ww <- w %>% filter(group == "EXHAUSTION_UCell_HIGH") %>% arrange(desc(auc)) %>% select(feature, logFC, auc, padj) 
 ww
-ggplot(ww,aes(x=feature,y=auc)) + geom_bar(stat="identity") + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) + ylim(c(0,1))
+
+ggplot(ww,aes(x=reorder(feature,-auc),y=auc)) + geom_bar(stat="identity") + theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1), 
+        axis.title.x=element_blank()) +
+  coord_cartesian(ylim=c(0.45, 1)) +
+  ggtitle("Prediction of T cell subtypes")
+
+ggsave("plots/auc.signatures.subtype.by.Exh.png", height=4, width=4)
 ```
 PROTEASOME_UCell AUC 0.58
 
@@ -195,18 +209,22 @@ table(data_seurat@meta.data$meta.cluster.coarse.TexTem,data_seurat@meta.data$fun
 
 
 ```{r}
-selFeatures <- c("T_EX_sub_T_EM_UCell","EXHAUSTION_UCell","PROTEASOME_UCell","HALLMARK_ROS_UCell","HALLMARK_HYPOXIA_UCell")
+selFeatures <- c("EXHAUSTION_UCell","PROTEASOME_UCell","HALLMARK_ROS_UCell","HALLMARK_HYPOXIA_UCell")
 w <- wilcoxauc(t(data_seurat@meta.data[,selFeatures]),y=data_seurat$meta.cluster.coarse.TexTem)
 ww <- w %>% filter(group == "CD8.c09.Tex.CXCL13") %>% arrange(desc(auc)) %>% select(feature, logFC, auc, padj) 
 ww
-ggplot(ww,aes(x=feature,y=auc)) + geom_bar(stat="identity") + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) + ylim(c(0,1))
+
+
+ggplot(ww,aes(x=reorder(feature,-auc),y=auc)) + geom_bar(stat="identity") + theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1), 
+        axis.title.x=element_blank()) +
+  coord_cartesian(ylim=c(0.5, 0.9)) +
+  ggtitle("Prediction of T cell subtypes")
+
+ggsave("plots/auc.signatures.subtype.zheng.ann.png", height=4, width=4)
 ```
 PROTEASOME_UCell AUC 0.58
 
-
-```{r}
-ggplot(ww,aes(x=feature,y=auc)) + geom_bar(stat="identity") + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) + ylim(c(0,1))
-```
 
 PROTEASOME_UCell is generally predictive of Tex.
 
@@ -231,7 +249,7 @@ table(data_seurat.train$dataset)
 data_seurat.test <- subset(data_seurat, idents = ds.test)
 table(data_seurat.test$dataset)
 ```
-Find  PROTEASOMA sig genes correlation with exhaustion
+Find  PROTEASOMAL sig genes correlation with exhaustion
 
 ```{r}
 cors <- apply(data_seurat.train@assays$RNA@data[signatures$PROTEASOME,],1,function(x){cor(data_seurat.train$EXHAUSTION_UCell,x)})
