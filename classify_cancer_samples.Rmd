@@ -83,16 +83,17 @@ gc()
 
 Check distributions of normalized counts
 ```{r fig.height=5, fig.width=8}
+gene <- "CD2"
 pll <- lapply(names(seurat.list),
        function(x){
-          df <- data.frame(counts = seurat.list[[x]]@assays$RNA@counts["CD8A",])
+          df <- data.frame(counts = seurat.list[[x]]@assays$RNA@counts[gene,])
           ggplot(df, aes(x=counts)) + geom_histogram(bins=50) + ggtitle(x)
        })
 wrap_plots(pll)
 
 pll <- lapply(names(seurat.list),
        function(x){
-          df <- data.frame(norm.data = seurat.list[[x]]@assays$RNA@data["CD8A",])
+          df <- data.frame(norm.data = seurat.list[[x]]@assays$RNA@data[gene,])
           ggplot(df, aes(x=norm.data)) + geom_histogram(bins=50) + ggtitle(x)
        })
 wrap_plots(pll)

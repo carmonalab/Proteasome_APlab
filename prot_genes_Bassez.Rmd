@@ -1,0 +1,241 @@
+---
+title: Analyse proteasomal gene expression in breast cancer dataset by Bassez et al.
+author: "M. Andreatta <massimo.andreatta at unil.ch> and S. Carmona <santiago.carmona at unil.ch>"
+knit: (function(input_file, encoding) {
+  out_dir <- 'docs';
+  rmarkdown::render(input_file,
+ encoding=encoding,
+ output_file=file.path(dirname(input_file), out_dir, 'index.html'))})
+#output: html_notebook
+---
+
+Publication: https://www.nature.com/articles/s41591-021-01323-8
+
+```{r}
+library(ggplot2)
+library(Seurat)
+library(UCell)
+library(scGate)
+library(viridis)
+```
+
+Analyze dataset by Bassez et al.
+```{r}
+ddir <- "~/Dropbox/CSI/Datasets/Bassez/data/"
+
+data <- readRDS(paste0(ddir,"1864-counts_tcell_cohort1.rds"))
+metadata <- read.csv(paste0(ddir,"1870-BIOKEY_metaData_tcells_cohort1_web.csv"), sep = ",")
+rownames(metadata) <- metadata$Cell
+
+metadata <- metadata[rownames(metadata) %in%  colnames(data),]
+seurat <- CreateSeuratObject(counts = data, meta.data = metadata)
+```
+
+QC
+```{r fig.height=7}
+seurat[["percent.mito"]] <- PercentageFeatureSet(seurat, pattern = "^MT")
+seurat[["percent.ribo"]] <- PercentageFeatureSet(seurat, pattern = "^RP[LS]")
+
+vars <- c("nFeature_RNA", "nCount_RNA", "percent.mito","percent.ribo")
+Idents(seurat) <- "patient_id"
+VlnPlot(seurat, features = vars, ncol = 1, pt.size=0)
+
+quantiles <- c(0.001,0.005,0.01,0.05,0.5,0.9,0.95,0.99,0.995,0.999)  
+quants <- lapply(vars, function(x){
+    quantile(seurat@meta.data[,x], quantiles)
+})
+names(quants) <- vars
+as.data.frame(quants)
+
+```
+Filter outliers
+```{r}
+seurat
+seurat <- subset(seurat, subset = nFeature_RNA > 400 & nFeature_RNA < 3500)
+seurat <- subset(seurat, subset = nCount_RNA > 800 & nCount_RNA < 10000)
+seurat <- subset(seurat, subset = percent.mito < 15)
+seurat
+```
+
+Dim red
+```{r}
+#HER2+
+#seurat <- subset(seurat, subset = BC_type == "HER2+")
+
+seurat <- NormalizeData(seurat)
+seurat <- FindVariableFeatures(seurat, selection.method = "vst", verbose = T)
+
+seurat <- ScaleData(seurat)
+seurat <- RunPCA(seurat, features = VariableFeatures(object = seurat))
+seurat <- RunUMAP(seurat, dims = 1:10)
+
+DimPlot(seurat, reduction = "umap", group.by = "cellSubType")
+DimPlot(seurat, reduction = "umap", group.by = "patient_id")
+DimPlot(seurat, reduction = "umap", group.by = "expansion")
+
+FeaturePlot(seurat, features=c("CD8A","CD8B","CD4","NCAM1","SPI1","LCK"))
+FeaturePlot(seurat, features=c("TCF7","CCR7","GZMB","GZMK","HAVCR2","PDCD1"))
+```
+Subset on CD8 T cells
+```{r}
+cd8_sets <- c("CD8_N", "CD8_RM","CD8_EM", "CD8_EMRA", "CD8_EX", "CD8_EX_Proliferating")
+seurat.cd8 <- subset(seurat, subset = cellSubType %in% cd8_sets)
+
+seurat.cd8$cellSubType <- factor(seurat.cd8$cellSubType, levels=cd8_sets)
+```
+
+```{r}
+seurat.cd8 <- NormalizeData(seurat.cd8)
+seurat.cd8 <- FindVariableFeatures(seurat.cd8, selection.method = "vst", verbose = T)
+
+seurat.cd8 <- ScaleData(seurat.cd8)
+seurat.cd8 <- RunPCA(seurat.cd8, features = VariableFeatures(object = seurat.cd8))
+seurat.cd8 <- RunUMAP(seurat.cd8, dims = 1:10)
+
+DimPlot(seurat.cd8, reduction = "umap", group.by = "cellSubType")
+DimPlot(seurat.cd8, reduction = "umap", group.by = "patient_id")
+DimPlot(seurat.cd8, reduction = "umap", group.by = "expansion")
+
+FeaturePlot(seurat.cd8, features=c("CD8A","CD8B","CD4","NCAM1","PTPRC","LCK"), ncol=3)
+FeaturePlot(seurat.cd8, features=c("TCF7","CCR7","GZMB","GZMK","HAVCR2","PDCD1"), ncol=3)
+FeaturePlot(seurat.cd8, features=c("KLRG1","IL7R","TOX","SELL"))
+```
+
+# Evaluate gene signatures using UCell
+  
+```{r}
+library(scGate)
+
+signatures <- list(UPS = c("PSMB2", "PSMC3", "RBX1"),
+                   PROTEASOME = c("PSMA1", "PSMA2", "PSMA3", "PSMA4", "PSMA5", "PSMA6", 
+                                  "PSMA7", "PSMB1", "PSMB2", "PSMB3", "PSMB4", "PSMB5", 
+                                  "PSMB6", "PSMB7", "PSMC1", "PSMC2", "PSMC3", "PSMC4", 
+                                  "PSMC5", "PSMC6", "PSMD1", "PSMD2", "PSMD3", "PSMD4", 
+                                  "PSMD6", "PSMD7", "PSMD8", "PSMD11", "PSMD12", "PSMD13", "PSMD14"),
+                   HYPOXIC_EXHAUSTION = c("PSMC3", "PSMB2", "RBPJ", "RBX1", "PKM", 
+                                          "PGK1", "PSMB8", "ENO1", "LDHA", "CHCHD2"),
+                   CHAPERONAS = c("PSMG1", "PSMG2", "PSMG3", "PSMG4", "POMP", 
+                                  "PSMD9", "PSMD5", "PAAF1"),
+                   EXHAUSTION = c("LAG3", "PDCD1", "CTLA4",
+                                  "NR4A2", "TIGIT", "TOX", "HAVCR2","ENTPD1"),
+                   EFFECTOR_MEMORY = c("GZMK", "NKG7", "ABI3", "FASLG", "KLRG1",
+                                       "EOMES", "CCR5", "SLAMF7", "CXCR3", "F2R", "CXCR6"),
+                   NAIVE_LIKE = c("CCR7", "IL7R", "SELL", "TCF7", "TXK", "S1PR1", "LEF1", "SATB1"),
+                   EARLY_ACTIVATED = c("FOS", "CD69", "ZFP36", "FOSB", "CCL5", "GZMM",
+                                       "DUSP2", "LYAR", "SAMD3", "CXCR4", "CTSW", "CD8A",
+                                       "ANXA1", "KLRG1", "CD8B", "AOAH", "TAGAP", "KLRD1", 
+                                       "IER2", "GZMA", "CST7", "ITM2C", "PARP8", "BTG2")
+)
+
+db <- scGate::genes.blacklist.default$Hs
+signatures$PROLIFERATION <- c(db$cellCycle.G1S, db$cellCycle.G2M)
+
+seurat.cd8 <- AddModuleScore_UCell(seurat.cd8, features = signatures, name = NULL)
+```
+
+
+```{r fig.height=4, fig.width=6}
+pll <- FeaturePlot(seurat.cd8, reduction = "umap", features = names(signatures), ncol = 3, combine=F)
+
+pll <- lapply(pll, function(x) {
+   x + scale_color_viridis(option="F") + theme(aspect.ratio=1)
+})
+wrap_plots(pll, ncol=3)   
+    
+```
+```{r fig.height=5}
+Idents(seurat.cd8) <- "cellSubType"
+VlnPlot(seurat.cd8, features=names(signatures),  pt.size = 0)
+```
+
+```{r fig.height=3, fig.width=6}
+Idents(seurat.cd8) <- "expansion"
+VlnPlot(seurat.cd8, features=names(signatures),  pt.size = 0, ncol=5)
+```
+
+Correlation between exhaustion and proteasome
+```{r}
+data <- seurat.cd8@meta.data
+ggplot(data , aes(x=PROTEASOME, y=EXHAUSTION)) + 
+  geom_point() + geom_smooth(method="auto", se=TRUE) + theme_light()
+
+cor.test(data$PROTEASOME, data$EXHAUSTION)
+```
+Which patients are responders? (based on T cell expansion)
+```{r}
+tab <- table(seurat.cd8$patient_id, seurat.cd8$expansion)
+
+responder <- rep(NA, nrow(tab))
+names(responder) <- rownames(tab)
+
+for (p in rownames(tab)) {
+  max <- which(tab[p,] == max(tab[p,]))
+  responder[p] <- names(max)[1]
+}
+responder
+```
+
+```{r}
+sub <- c("CD8_EX","CD8_EX_Proliferating")
+min_cells <- 20
+
+data.use <- subset(seurat.cd8, subset=cellSubType %in% sub )
+
+pre <- subset(data.use, subset=timepoint == "Pre")
+post <- subset(data.use, subset=timepoint == "On")
+
+table.pre <- table(pre$patient_id)
+table.post <- table(post$patient_id)
+
+pass.pre <- table.pre[table.pre > min_cells]
+pass.post <- table.post[table.post > min_cells]
+
+pass <- intersect(names(pass.pre), names(pass.post))
+
+differentials <- lapply(pass, function(x) {
+  sub.post <- subset(post, subset=patient_id == x)
+  sub.pre <- subset(pre, subset=patient_id == x)
+  
+  proteasome <- mean(sub.post$PROTEASOME) - mean(sub.pre$PROTEASOME)
+  exh <- mean(sub.post$EXHAUSTION) - mean(sub.pre$EXHAUSTION)
+  prolif <- mean(sub.post$PROLIFERATION) - mean(sub.pre$PROLIFERATION)
+  c(proteasome, exh, prolif)
+})
+names(differentials) <- pass
+
+df <- as.data.frame(t(as.data.frame(differentials)))
+colnames(df) <- c("Proteasome","Exhaustion","Proliferation")
+
+df$Responder <- as.vector(responder[rownames(df)])
+
+df <- df[df$Responder %in% c("E","NE"),]
+```
+
+
+```{r}
+melted <- reshape2::melt(df[,c("Proteasome","Responder")], value.name = "Score_diff")
+melted <- melted[,c(1,3)]
+
+a <- ggplot(melted, aes(x=Responder, y=Score_diff)) +
+  geom_boxplot() +
+  geom_jitter(position=position_jitter(0.2)) + 
+  theme_light() + ggtitle("Proteasome score")
+
+melted <- reshape2::melt(df[,c("Exhaustion","Responder")], value.name = "Score_diff")
+melted <- melted[,c(1,3)]
+
+b <- ggplot(melted, aes(x=Responder, y=Score_diff)) +
+  geom_boxplot() +
+  geom_jitter(position=position_jitter(0.2)) + 
+  theme_light() + ggtitle("Exhaustion score")
+
+melted <- reshape2::melt(df[,c("Proliferation","Responder")], value.name = "Score_diff")
+melted <- melted[,c(1,3)]
+
+c <- ggplot(melted, aes(x=Responder, y=Score_diff)) +
+  geom_boxplot() +
+  geom_jitter(position=position_jitter(0.2)) + 
+  theme_light() + ggtitle("Proliferation score")
+
+a | b | c
+```
