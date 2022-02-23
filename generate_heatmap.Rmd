@@ -92,8 +92,6 @@ table(merged$dataset, merged$functional.cluster)
 
 merged@assays$RNA@var.features <- var.use
 
-saveRDS(merged, file="aux/Zheng.seurat.gated.annotated.Tex_Tem.merged.rds")
-merged <- readRDS("aux/Zheng.seurat.gated.annotated.Tex_Tem.merged.rds")
 ```
 
 Label (and split?) by technology
@@ -105,11 +103,17 @@ merged$tech.type[merged$dataset %in% c("CRC.zhangLabSS2","HCC.zhangLabSS2","LUNG
 
 Dimensionality reductions
 ```{r}
+ndim=10
 merged <- ScaleData(merged, do.scale = TRUE, do.center = TRUE) 
 merged <- RunPCA(object = merged, features = var.use, ndims.print = 1:5, nfeatures.print = 10, npcs = ndim)
 merged <- RunUMAP(merged, reduction = "pca", dims = 1:ndim, seed.use=123)
 
+saveRDS(merged, file="aux/Zheng.seurat.gated.annotated.Tex_Tem.merged.rds")
 ```
+```{r, eval=F}
+merged <- readRDS("aux/Zheng.seurat.gated.annotated.Tex_Tem.merged.rds")
+```
+
 
 Have a look of the data
 ```{r fig.height=3}
@@ -147,7 +151,6 @@ merged.tech <- SplitObject(merged, split.by = "tech.type")
 #exclude Li et al. dataset 
 merged.tech$UMI <- subset(merged.tech$UMI, subset=dataset=="Melanoma.HanjieLi2018", invert=T)  
 ```
-
 
 
 ```{r fig.height=3, fig.width=5}
@@ -303,7 +306,32 @@ h <- make.heatmap(data.heat, genes=markers, brewer.palette = "PiYG")
 ggsave("plots/heatmap.avg.expression.marker.genes.TPM.pdf", plot=h, height=4, width=10)
 ```
 
+Re-do heatmap splitting by Zheng's annotation meta.cluster.coarse.TexTem
 
+```{r}
+library(RColorBrewer)
+
+#Make metanalysis on UMI-type technologies
+data.heat <- merged.tech$UMI
+
+DefaultAssay(data.heat) <- "RNA"
+
+data.heat$dataset_patient <- paste0(data.heat$dataset, "@", data.heat$patient)
+
+table(data.heat$meta.cluster.coarse.TexTem,useNA = "always")
+data.heat <- subset(data.heat, meta.cluster.coarse.TexTem %in% c("CD8.c05.Tem.GZMK","CD8.c09.Tex.CXCL13"))
+
+data.heat$subset_dataset_patient <- paste0(data.heat$meta.cluster.coarse.TexTem, "@", data.heat$dataset_patient)
+
+library(pheatmap)
+h <- make.heatmap(data.heat, genes=proteasomal.genes, brewer.palette = "PiYG")
+ggsave("plots/heatmap.avg.expression.proteasomal.genes.UMI.Zheng.pdf", plot=h, height=6, width=13)
+
+markers <- c("HAVCR2","PDCD1","LAG3","TOX","TOX2","ENTPD1","CTLA4","CXCL13","GZMB","IL7R","TCF7","GZMK","GZMM","ANXA1","CCL5")
+h <- make.heatmap(data.heat, genes=markers, brewer.palette = "PiYG")
+ggsave("plots/heatmap.avg.expression.marker.genes.UMI.Zheng.pdf", plot=h, height=4, width=13)
+
+```
 
 
 #######################################
