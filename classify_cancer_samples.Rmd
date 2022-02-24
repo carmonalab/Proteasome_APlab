@@ -9,7 +9,7 @@ knit: (function(input_file, encoding) {
 #output: html_notebook
 ---
 
-```{r warning=F, message=F}
+```{r warning=F, message=F, results=F}
 library(renv)
 renv::restore()
 

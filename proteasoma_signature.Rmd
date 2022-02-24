@@ -72,6 +72,7 @@ myFeaturesUcell <- paste0(names(signatures),"_UCell")
 ```
 
 ```{r, fig.height=10, fig.width=10}
+Idents(data_seurat) <- "functional.cluster"
 cols.functional.cluster <- c("#53B400","#edbe2a")
 VlnPlot(data_seurat,features = myFeaturesUcell, pt.size = 0, stack = T, 
         flip = T, cols = cols.functional.cluster, fill.by	="ident") + NoLegend()
