@@ -192,12 +192,11 @@ cd8.model <- models$human$generic$CD8T
 
 #Add MAITs to model
 cd8.model <- scGate::gating_model(cd8.model, level=4, negative=T, name="MAIT", signature = c("KLRB1", "SLC4A10", "NCR3"))
-cd8.model <- scGate::gating_model(cd8.model, level=4, negative=T, name="iNKT", signature = c("ZBTB16"))
 
 gated.list <- lapply(names(seurat.list),
        FUN = function(x) {
           print(sprintf("#Running dataset %s", x))
-          scGate(seurat.list[[x]], model=cd8.model, ncores=4)
+          scGate(seurat.list[[x]], model=cd8.model, ncores=4, pca.dim = 30)
        })
 names(gated.list) <- names(seurat.list)
 
@@ -250,11 +249,16 @@ wrap_plots(pll)
 ggsave("plots/Zheng.sets.by.patient.png", height=18, width=35)
 ```
 
-Convert to `sce`?
+Can we detect iNKTs?
 ```{r eval=F}
-gated.sce <- lapply(gated.list, function(x){
-      as.SingleCellExperiment(x)
-})
+model <- scGate::gating_model(level=1, positive=T, name="CD8T", signature = c("CD8A","CD8B"))
+model <- scGate::gating_model(model, level=1, negative=T, name="iNKT", signature = c("ZBTB16"))
+
+gated.list <- lapply(gated.list,
+       FUN = function(x) {
+          tmp <- subset(x, subset=is.pure=="Pure")
+          scGate(tmp, model=model, ncores=4, neg.thr = 0.01)
+       })
 ```
 
 
@@ -270,14 +274,16 @@ Select pure cells and sufficiently large samples
 min.cells <- 200
 large.samples <- lapply(names(gated.list),
        FUN = function(x) {
-          gated.list[[x]] <- subset(gated.list[[x]], subset=is.pure=="Pure")
-          gated.list[[x]] <- DietSeurat(gated.list[[x]], dimreducs = NULL, assays = "RNA")
+          tmp <- subset(gated.list[[x]], subset=is.pure=="Pure")
+          tmp <- DietSeurat(tmp, dimreducs = NULL, assays = "RNA")
           
-          ss <- SplitObject(gated.list[[x]], split.by = 'patient')
+          ss <- SplitObject(tmp, split.by = 'patient')
           names(ss) <- paste0(x, "_", names(ss))
           
           ncells <- lapply(ss, ncol)
           ss <- ss[ncells>min.cells]
+          
+          ss
        })
 large.samples <- unlist(large.samples, recursive = F)
 names(large.samples)
@@ -325,6 +331,16 @@ pll <- lapply(names(projected),
 
 wrap_plots(pll)
 ggsave("plots/Zheng.samples.projected.png", height=35, width=50, limitsize = FALSE)
+```
+
+```{r eval=F, fig.height=15}
+pll <- lapply(names(projected),
+       FUN = function(x) {
+          DefaultAssay(projected[[x]]) <- "RNA"
+          FeaturePlot(projected[[x]], features=c("Zbtb16")) + NoLegend()
+       })
+
+wrap_plots(pll)
 ```
 
 ```{r fig.height=4, fig.width=10}
@@ -401,12 +417,12 @@ ggsave("plots/radars.projected.by.study.5.png", plot = a, height=12, width=25)
 
 Merge all
 ```{r}
-ds <- 500
+ds <- 1000
+
 projected.sub <- lapply(projected.by.study, function(x) {
-#    x <- subset(x, subset=functional.cluster %in% c("CD8_EffectorMemory","CD8_Tex"))
-    #downsample?
-    Idents(x) <- "dataset"
-    subset(x, downsample = ds)
+  #downsample?
+  Idents(x) <- "dataset"
+  subset(x, downsample = ds)
 })
 
 projected.merged.all <- Reduce(f = ProjecTILs:::merge.Seurat.embeddings, x = projected.sub)
@@ -428,9 +444,18 @@ palette <- c("#edbe2a", "#A58AFF", "#53B400", "#F8766D",
 
 names(palette) <- levels(factor(ref.use$functional.cluster))
 
+DimPlot(projected.merged.all, reduction = "umap", cols=palette, group.by = "functional.cluster")
+
+DefaultAssay(projected.merged.all) <- "RNA"
+FeaturePlot(projected.merged.all, features=c("Zbtb16","Blk","Gzmk","Sell"), max.cutoff = 'q98')
+```
+
+Recalculate embeddings
+```{r}
 DefaultAssay(projected.merged.all) <- "integrated"
 ndim <- dim(ref.use@misc$umap_object$data)[2]
 projected.merged.all <- RunUMAP(projected.merged.all, dims = 1:ndim)
+
 DimPlot(projected.merged.all, reduction = "umap", cols=palette, group.by = "functional.cluster")
 
 #DimPlot(projected.merged.all, reduction = "umap", group.by = "dataset", split.by="dataset", ncol = 6) + NoLegend()
@@ -438,25 +463,25 @@ DimPlot(projected.merged.all, reduction = "umap", cols=palette, group.by = "func
 ```
 What are the outlier clusters?
 ```{r}
-x <- projected.merged.all
 npc <- 15
 resol <- 0.3
 
-x <- FindNeighbors(x, reduction = "pca", dims = 1:npc)
-x <- FindClusters(x, resolution = resol)
-x$cluster <- x@active.ident
+DefaultAssay(projected.merged.all) <- "integrated"
+projected.merged.all <- FindNeighbors(projected.merged.all, reduction = "pca", dims = 1:npc)
+projected.merged.all <- FindClusters(projected.merged.all, resolution = resol)
+projected.merged.all$cluster <- projected.merged.all@active.ident
 
-DimPlot(x, group.by = "cluster", label = T) + NoLegend()
+DimPlot(projected.merged.all, group.by = "cluster", label = T) + NoLegend()
 ```
 
 ```{r}
-DefaultAssay(x) <- 'RNA'
-cluster.markers <- FindAllMarkers(x, only.pos = T, min.pct = 0.2, min.diff.pct=0.05, 
+DefaultAssay(projected.merged.all) <- 'RNA'
+cluster.markers <- FindAllMarkers(projected.merged.all, only.pos = T, min.pct = 0.2, min.diff.pct=0.05, 
                                   logfc.threshold = 0.1, max.cells.per.ident = 1000, test.use="wilcox", base=exp(1))
 
 all <- cluster.markers %>% group_by(cluster) %>% top_n(n = 50, wt = abs(avg_logFC))
 
-for (i in levels(x@active.ident)) {
+for (i in levels(projected.merged.all@active.ident)) {
     print(subset(all, cluster==i))
 }  
 ```
@@ -466,12 +491,13 @@ for (i in levels(x@active.ident)) {
 DefaultAssay(projected.merged.all) <- "RNA"
 pl <- FeaturePlot(projected.merged.all, combine = F, max.cutoff = 'q98',
             features=c("Cd8a","Cd4","Tcf7","Ccr7","Cd69","Gzmk","Gzmb","Havcr2","Lag3","Entpd1",
-                       "Cxcr6","Mki67","Top2a","Anxa1","Gzmm","Spi1","Ifit3","Hsp90aa1","Sell")) 
-pl <- lapply(pl, function(x) {
-   x + scale_color_viridis(option="D", direction=1)
-})
+                       "Cxcr6","Mki67","Top2a","Anxa1","Gzmm","Zbtb16","Hivep3","Ifit3","Hsp90aa1","Sell")) 
+#pl <- lapply(pl, function(x) {
+  # x + scale_color_viridis(option="D", direction=1)
+#})
 wrap_plots(pl)
 
+#table(x$patient, x$cluster)
 ```
 
 View global embeddings of Tem and Tex cells
@@ -481,10 +507,12 @@ palette <- c("#5E3C99","#FDB863")
 DefaultAssay(projected.merged.Temex) <- "integrated"
 ndim <- dim(ref.use@misc$umap_object$data)[2]
 projected.merged.Temex <- RunUMAP(projected.merged.Temex, dims = 1:ndim)
-DimPlot(projected.merged.Temex, reduction = "umap", cols=palette, group.by = "functional.cluster")
+DimPlot(projected.merged.Temex, reduction = "umap", cols=palette, group.by = "functional.cluster")  +
+     ggtitle("CD8+ TILs") + theme(aspect.ratio = 1)
 
-DimPlot(projected.merged.Temex, reduction = "umap", group.by = "dataset", split.by="dataset", ncol = 6) + NoLegend()
+#DimPlot(projected.merged.Temex, reduction = "umap", group.by = "dataset", split.by="dataset", ncol = 6) + NoLegend()
 
+ggsave("plots/Tex_Tem.integrated.UMAP.png", height=4, width=7)
 ```
 
 ```{r fig.height=4}
@@ -496,6 +524,18 @@ pl <- lapply(pl, function(x) {
 })
 wrap_plots(pl)
 
+pl <- FeaturePlot(projected.merged.Temex, combine = F, max.cutoff = 'q98',
+            features=c("Havcr2","Cxcl13","Lag3","Gzmk","Anxa1","Mki67")) 
+      #      features=c("Psma1","Psmd8","Psma5","Anxa1","Lag3","Mki67")) 
+pl <- lapply(pl, function(x) {
+   x + scale_color_viridis(option="D", direction=1, begin=0.2) + 
+      theme(aspect.ratio = 1, axis.title=element_blank(),
+        axis.text=element_blank(),
+        axis.ticks=element_blank())
+})
+wrap_plots(pl)
+
+ggsave("plots/markers.integrated.UMAP.png", height=5, width=10)
 ```
 
 
@@ -570,9 +610,5 @@ pll <- lapply(names(gated.sub),
 
 wrap_plots(pll)
 ggsave("plots/Zheng.vs.projectils.BARPLOT.Tex_T_EM.png", height=25, width=35)
-
-```
-
-```{r}
 
 ```

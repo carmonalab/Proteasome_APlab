@@ -644,15 +644,15 @@
     },
     "UCell": {
       "Package": "UCell",
-      "Version": "1.99.1",
+      "Version": "1.99.7",
       "Source": "GitHub",
       "RemoteType": "github",
       "RemoteHost": "api.github.com",
       "RemoteRepo": "UCell",
       "RemoteUsername": "carmonalab",
       "RemoteRef": "HEAD",
-      "RemoteSha": "77fad0fcc08129673ec4fa9eded3585b17be6771",
-      "Hash": "eb59045ec67eb3fbc51cb7018177cb50",
+      "RemoteSha": "d3109f37b0985d5fc13553e8334ed3c7ed649d27",
+      "Hash": "51c8c0c7946d71c59479787200451949",
       "Requirements": [
         "BiocParallel",
         "Matrix",
@@ -1097,10 +1097,10 @@
     },
     "formatR": {
       "Package": "formatR",
-      "Version": "1.11",
+      "Version": "1.12",
       "Source": "Repository",
       "Repository": "CRAN",
-      "Hash": "2590a6a868515a69f258640a51b724c9",
+      "Hash": "e45696cc90f4d5b993fa1a289e01c5df",
       "Requirements": []
     },
     "fs": {
@@ -2067,15 +2067,15 @@
     },
     "scGate": {
       "Package": "scGate",
-      "Version": "1.0.1",
+      "Version": "1.0.2",
       "Source": "GitHub",
       "RemoteType": "github",
       "RemoteHost": "api.github.com",
       "RemoteRepo": "scGate",
       "RemoteUsername": "carmonalab",
       "RemoteRef": "HEAD",
-      "RemoteSha": "4cd1db6c9a81070fe370c4f8b139266efcda42ff",
-      "Hash": "1d436f5ab34c01ade1ffffa7663e4bf7",
+      "RemoteSha": "c7b3f6b391a4b8188cf3ef4e86e6c4d98d97ccf1",
+      "Hash": "6873eb8097b58221b4d16495380396ff",
       "Requirements": [
         "Seurat",
         "UCell",
