@@ -1,6 +1,6 @@
 # Meta-analysis of proteasomal gene expression in T cells from human cancers
 
-This repository contains scripts to reproduce bioinformatics analyses from the work by de Blas et al. (manuscript in preparation). Briefly, we re-analyse the large collection of scRNA-seq dataset collated by [Zheng et al. (2021) Science](https://www.science.org/doi/10.1126/science.abe6474) and analyse the association of proteasomal gene expression to CD8+ T cell exhaustion.
+This repository contains scripts to reproduce bioinformatics analyses from the work by de De Blas et al. (manuscript in preparation). Briefly, we re-analyse the large collection of scRNA-seq dataset collated by [Zheng et al. (2021) Science](https://www.science.org/doi/10.1126/science.abe6474) and analyse the association of proteasomal gene expression to CD8+ T cell exhaustion.
 
 The annotated notebook [classify_cancer_samples.Rmd](./classify_cancer_samples.Rmd) downloads and processes a collection of CD8+ T cells from multiple studies and cancer types from the study by Zheng et al. For this meta-analysis, we focused on droplet-based technologies (25 datasets covering 19 cancer types), to ensure that expression profiles are comparable across studies.
 
