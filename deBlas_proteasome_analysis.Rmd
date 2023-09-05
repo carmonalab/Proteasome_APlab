@@ -1,0 +1,1351 @@
+---
+title: Classify T cells from multiple studies (human cancers)
+author: "M. Andreatta <massimo.andreatta at unil.ch> and E. Prieto Fernandez <endikaprieto at vhio.net>"
+date: "2023-07-25"
+knit: (function(input_file, encoding) {
+  out_dir <- 'docs';
+  rmarkdown::render(input_file,
+  encoding=encoding,
+  output_file=file.path(dirname(input_file), out_dir, 'index.html'))})
+#output: html_document
+---
+
+Libraries
+
+```{r warning=F, message=F, results=F}
+
+library(renv)
+renv::restore()
+
+library(ggplot2)
+library(Seurat)
+library(UCell)
+library(scGate)
+library(Biostrings)
+library(ProjecTILs)
+library(SingleCellExperiment)
+library(viridis)
+library(RColorBrewer)
+library(msigdbr)
+library(tibble)
+library(dplyr)
+library(fgsea)
+library(corrplot)
+library(ggpubr)
+library(pheatmap)
+library(stringr)
+library(ggrepel)
+library(patchwork)
+library(readxl)
+library(reshape2)
+library(presto)
+library(ggcorrplot)
+
+```
+
+## Data preparation
+
+We will use the collection of single-cell data by [Zheng et al. (2021) Science](https://www.science.org/doi/10.1126/science.abe6474), which covers 21 cancer types and 300 patients.
+
+The data can be downloaded from Zenodo: https://doi.org/10.5281/zenodo.5461803
+Direct download link: https://zenodo.org/record/5461803/files/data.expression.tar.gz?download=1
+```{r}
+#After data download, set the path below to point to your data folder
+
+datapath <- "/Users/endikaprieto/Library/CloudStorage/OneDrive-VHIO/proj_proteasome/bioinformatics/single-cell analysis/data/expression/CD8/byDataset"
+
+data.list <- list()
+for (file in list.files(datapath)) {
+  name <- gsub(pattern='.sce.rds', replacement = '', x=file)
+  data.list[[name]] <- readRDS(sprintf("%s/%s",datapath,file))
+}
+names(data.list)
+
+```
+
+Convert to Seurat object
+```{r warning=F}
+
+seurat.list <- lapply(X = seq_along(data.list),  
+                    FUN=function(i) {
+                        mainExpName(data.list[[i]]) <- 'RNA'
+                        study.name <- names(data.list)[i]
+                        study.id <- sprintf("S%02d",i)
+                        
+                        a <- names(assays(data.list[[i]]))
+                        if ("counts" %in% a) {
+                           counts.slot = "counts"
+                        } else if ("log2TPM" %in% a) {
+                           counts.slot = "log2TPM"
+                        } else if ("norm_exprs" %in% a) {
+                           counts.slot = "norm_exprs" 
+                        }  
+                        
+                        #Use gene names for all objects (stored in display.name)
+                        rownames(data.list[[i]]) <- rowData(data.list[[i]])[["display.name"]]  
+
+                        r <- as.Seurat(data.list[[i]], counts = counts.slot, data = "norm_exprs", project=study.name)
+                        r <- RenameCells(r, add.cell.id = study.id)
+                        
+                        r
+                    })
+names(seurat.list) <- names(data.list)
+
+rm(data.list)  #free up memory
+gc()
+
+```
+
+Check distributions of normalized counts
+```{r}
+
+gene <- "CD2"
+pll <- lapply(names(seurat.list),
+       function(x){
+          df <- data.frame(counts = seurat.list[[x]]@assays$RNA@counts[gene,])
+          ggplot(df, aes(x=counts)) + geom_histogram(bins=50) + ggtitle(x)
+       })
+wrap_plots(pll)
+
+pll <- lapply(names(seurat.list),
+       function(x){
+          df <- data.frame(norm.data = seurat.list[[x]]@assays$RNA@data[gene,])
+          ggplot(df, aes(x=norm.data)) + geom_histogram(bins=50) + ggtitle(x)
+       })
+wrap_plots(pll)
+
+```
+
+Data seems to be normalized in inconsistent way. Most datasets have expression of CD8A of ~3 on average while other subsets of ~9 on average. Try to correct by measuring 90% percentile of key genes.
+
+Re-scale flagged datasets
+```{r  fig.height=8, fig.width=12}
+
+ref.factor <- 3
+seurat.list <- lapply(seurat.list,
+       function(x){
+          df <- data.frame(x@assays$RNA@data[c("CD2","CD3E","CD3G","CD3D","CD8A","CD8B","PTPRC"),])
+          q90 <- apply(df, 1, function(i){quantile(i, c(0.9))[1]})
+          q90.mean <- mean(q90)
+          print(sprintf("%s - %.3f", unique(x$dataset)[1], q90.mean))
+          
+          factor <- ref.factor / q90.mean
+          #Rescale data with correction factor
+          x@assays$RNA@data <- factor * x@assays$RNA@data
+          x
+       })
+
+```
+
+```{r}
+
+pll <- lapply(names(seurat.list),
+       function(x){
+          df <- data.frame(norm.data = seurat.list[[x]]@assays$RNA@data["CD8A",])
+          ggplot(df, aes(x=norm.data)) + geom_histogram(bins=50) + ggtitle(x)
+       })
+wrap_plots(pll)
+
+```
+
+Check some signatures for major cell types
+```{r}
+
+sigs <- list("Immune"=c("PTPRC"),
+             "Myeloid"=c("SPI1"),
+             "Tcell"=c("CD3D","CD3E","CD3G","CD2"),
+             "Cd8T"=c("CD8A","CD8B","CD4-"),
+             "Cd4T"=c("CD4","CD40LG"),
+             "Treg"=c("CD4","FOXP3"),
+             "Stromal"= c("MMP2","COL1A1","COL1A2","COL5A1","LUM","PDGFRA"),
+             "Bcell" = c("CD79A","MS4A1","BANK1","PAX5","CD19"),
+             "NK" = c("KLRD1","NKG7","NCR1","FCGR3A","CD3D-","CD3E-","CD3G-"),
+             "MoMacDC" = c("LYZ","CSF1R","MSR1","MAFB","CD300E"),
+             "Plasma_cell" = c("IGKC","IGHG3","IGHG1","IGHA1","CD19-"),
+             "MAIT"=c("KLRB1", "SLC4A10", "NCR3"),
+             "iNKT"=c("ZBTB16"),
+             "KIR_NK"=c("TXK","KIR2DL3")
+             )
+cycling.g1 <- scGate::genes.blacklist.default$Hs$cellCycle.G1S
+cycling.g2 <- scGate::genes.blacklist.default$Hs$cellCycle.G2M
+cycling <- c(cycling.g1, cycling.g2)
+sigs$cycling = cycling
+seurat.list <- lapply(seurat.list,
+       FUN = function(x) {
+          AddModuleScore_UCell(x, features = sigs, name=NULL, ncores=4)
+       })
+
+```
+
+Plot major cell type signatures
+```{r fig.height=6}
+
+for (type in names(sigs)) {
+  pll <- lapply(names(seurat.list),
+                FUN = function(x) {
+                  cols = c("lightgrey", "blue")
+                  if (sum(seurat.list[[x]][[type]])==0) {
+                     cols = c("lightgrey", "lightgrey")
+                  }
+                  
+                  FeaturePlot(seurat.list[[x]], features=c(type), max.cutoff = 'q99', cols=cols) + 
+                    ggtitle(sprintf("%s (%s)", x, type))
+                })
+  wrap_plots(pll)
+  ggsave(sprintf("plots/Zheng.sets.UCell.scores.%s.png", type), height=18, width=25)
+}
+
+```
+
+Filter CD8+ T cells
+```{r warning=F, message=F}
+
+models <- scGate::get_scGateDB()
+cd8.model <- models$human$generic$CD8T
+
+#Add MAITs to model
+cd8.model <- scGate::gating_model(cd8.model, level=4, negative=T, name="MAIT", signature = c("KLRB1", "SLC4A10", "NCR3"))
+
+gated.list <- lapply(names(seurat.list),
+       FUN = function(x) {
+          print(sprintf("#Running dataset %s", x))
+          scGate(seurat.list[[x]], model=cd8.model, ncores=4, pca.dim = 30)
+       })
+names(gated.list) <- names(seurat.list)
+rm(seurat.list)  #free up memory
+gc()
+
+```
+
+Show results of gating per dataset
+```{r}
+
+cols = c("#10f87b","#fa765e")
+names(cols) <- c("Pure","Impure")
+pll <- lapply(names(gated.list),
+       FUN = function(x) {
+          DimPlot(gated.list[[x]], group.by="is.pure", cols = cols) + ggtitle(x)
+       })
+wrap_plots(pll)
+ggsave("plots/Zheng.sets.gated.cd8t.png", height=18, width=25)
+
+```
+
+Show original annotations
+```{r}
+
+cc <- lapply(gated.list, function(x) {
+  unique(x$meta.cluster.coarse)
+  })
+clusters <- unique(unlist(cc))
+palette <- brewer.pal(n = 12, name = 'Paired')
+names(palette) <- clusters
+pll <- lapply(names(gated.list),
+       FUN = function(x) {
+          DimPlot(gated.list[[x]], group.by="meta.cluster.coarse", cols = palette) + ggtitle(x)
+       })
+wrap_plots(pll)
+ggsave("plots/Zheng.sets.by.coarse.cluster.png", height=18, width=35)
+
+```
+
+Plot by sample/patient
+```{r}
+
+pll <- lapply(names(gated.list),
+       FUN = function(x) {
+          DimPlot(gated.list[[x]], group.by="patient") + ggtitle(x)
+       })
+wrap_plots(pll)
+ggsave("plots/Zheng.sets.by.patient.png", height=18, width=35)
+
+```
+
+Select pure cells and sufficiently large samples
+```{r}
+
+min.cells <- 200
+large.samples <- lapply(names(gated.list),
+       FUN = function(x) {
+          tmp <- subset(gated.list[[x]], subset=is.pure=="Pure")
+          tmp <- DietSeurat(tmp, dimreducs = NULL, assays = "RNA")
+          
+          ss <- SplitObject(tmp, split.by = 'patient')
+          names(ss) <- paste0(x, "_", names(ss))
+          
+          ncells <- lapply(ss, ncol)
+          ss <- ss[ncells>min.cells]
+          
+          ss
+       })
+large.samples <- unlist(large.samples, recursive = F)
+names(large.samples)
+
+```
+
+Make projection
+Direct download link: https://figshare.com/articles/dataset/ProjecTILs_human_reference_atlas_of_CD8_tumor-infiltrating_T_cells_CD8_TIL_version_1/23608308
+```{r}
+
+ref.use <- load.reference.map(ref = "/Users/endikaprieto/Library/CloudStorage/OneDrive-VHIO/proj_TCR PBL/ProjecTILs/CD8T_human_ref_v1.rds")
+
+projected <- make.projection(large.samples, ref=ref.use, filter.cells = FALSE, skip.normalize = T, ncores=8)
+projected <- lapply(projected, function(x) {
+                      cellstate.predict(ref=ref.use, query=x)
+                    })
+
+```
+
+Plot projections by study
+```{r fig.height=30, fig.width=40}
+
+pll <- lapply(names(projected),
+       FUN = function(x) {
+          plot.projection(projected[[x]], ref=ref.use) + NoLegend() + ggtitle(x)
+       })
+wrap_plots(pll)
+
+ggsave("plots/Zheng.samples.projected.png", height=35, width=50, limitsize = FALSE)
+
+```
+
+Focus on 10x/in drop technologies to have more homogeneous and comparable gene expression across datasets.
+Also exclude the Melanoma.MosheSade-Feldman2018 study because some samples come from LN but all are marked as tumor.
+```{r}
+
+studies <- names(gated.list)
+
+LN.samples <- "MELA.MosheSade-Feldman2018"
+TPM.tech <- c("CHOL.thisStudy", "CRC.LeiZhang2018", "HCC.ChunhongZheng2017", "HCC.QimingZhang2019_SS2", "MELA.LivnatJerby-Arnon2018", "LC.XinyiGuo2018")
+
+studies <- setdiff(studies, LN.samples)
+studies <- setdiff(studies, TPM.tech)
+
+```
+
+Merge results by study to visualize jointly 
+```{r}
+
+matches <- lapply(studies,
+                  function(s) {
+                    match <- grep(pattern=s, x=names(projected))
+                    match
+                    })
+names(matches) <- studies
+matches <- matches[lapply(matches,length)>0]
+projected.by.study <- lapply(names(matches),
+                             function(s) {
+                               x <- matches[[s]]
+                               print(sprintf("%s - merging %i sets",s, length(x)))
+                               if (length(x) == 1) {
+                                  projected[[x]]
+                               } else {
+                                  Reduce(f = ProjecTILs:::merge.Seurat.embeddings, x = projected[x])
+                               }
+                             })
+names(projected.by.study) <- names(matches)
+length(projected.by.study)                        
+names(projected.by.study)
+rm(projected)  #free up memory
+gc()
+
+```
+
+Plot projections by study
+```{r fig.height=15, fig.width=20}
+
+pll <- lapply(names(projected.by.study),
+       FUN = function(x) {
+          plot.projection(projected.by.study[[x]], ref=ref.use, pointsize = 0.5, linesize = 0.5) + NoLegend() + ggtitle(x)
+       })
+wrap_plots(pll)
+
+ggsave(file.path(datapath,"plots", "Zheng.by.study.ProjecTILs.pdf"), height=22, width=25)
+
+```
+
+Merge all and downsample to max 3000 cells per dataset
+```{r}
+
+ds <- 3000
+projected.sub <- lapply(projected.by.study, function(x) {
+  Idents(x) <- "dataset"
+  subset(x, downsample = ds)
+})
+projected.merged.all <- Reduce(f = ProjecTILs:::merge.Seurat.embeddings, x = projected.sub)
+
+```
+
+Gene signatures
+```{r}
+
+gene.signatures <- list(
+  "exhaustion" = c("TCF7","CCR7","IL7R","CD4","CD8A","GZMB","GZMK","TOX","PDCD1","LAG3","HAVCR2","CX3CR1","CXCL13"),
+  "proteasome" = c("PSMA1","PSMA2","PSMA3","PSMA4","PSMA5","PSMA6","PSMA7","PSMB1","PSMB2","PSMB3","PSMB4","PSMB5","PSMB6","PSMB7","PSMC1","PSMC2","PSMC3","PSMC4","PSMC5","PSMC6","PSMD1","PSMD2","PSMD3","PSMD4","PSMD6","PSMD7","PSMD8","PSMD11","PSMD12","PSMD13","PSMD14"),
+  "inducible.proteasome" = c("PSMB8", "PSMB9", "PSMB10"),
+  "thymoproteasome" = c("PSMB11"),
+  "chaperones" = c("PSMG2", "POMP", "PSMD9"),
+  "PA28" = c("PSME1", "PSME2", "PSME3"),
+  "PA200" = c("PSME4"),
+  "iTEX" = c("PDCD1", "HAVCR2", "LAG3", "CTLA4", "ENTPD1", "TNFRSF9", "TNFRSF4", "CCL3", "CXCL13", "CRTAM", "TOX", "TCF7-", "IFNG-", "TNF-")
+)
+
+DefaultAssay(projected.merged.all) <- "RNA"
+projected.merged.all <- AddModuleScore_UCell(projected.merged.all , features = gene.signatures)
+signature.names <- paste0(names(gene.signatures), "_UCell")
+
+```
+
+Additional classifications:
+
+[1] Chu et al. Nat Med 2023: https://doi.org/10.1038/s41591-023-02371-y
+Direct download link: https://static-content.springer.com/esm/art%3A10.1038%2Fs41591-023-02371-y/MediaObjects/41591_2023_2371_MOESM3_ESM.xlsx
+```{r}
+
+file_path <- "/Users/endikaprieto/Library/CloudStorage/OneDrive-VHIO/proj_proteasome/bioinformatics/single-cell analysis"
+gene.list <- read_excel(paste0(file_path, "/41591_2023_2371_MOESM3_ESM.xlsx"), sheet = 5, skip = 1, col_names = TRUE)
+colnames(gene.list)
+
+classification <- list()
+
+for (i in colnames(gene.list)){
+  a <- gene.list[[i]]
+  a <- as.character(na.omit(a))
+  classification[[as.character(paste0("Chu_", i))]] <- a
+}
+
+DefaultAssay(projected.merged.all) <- "RNA"
+projected.merged.all <- AddModuleScore_UCell(projected.merged.all , features = classification)
+classification.names <- paste0(names(classification), "_UCell")
+
+```
+[2] Terminally exhausted validated in vitro
+
+```{r}
+
+# Calculate the 95th percentile of iTEX_UCell
+
+percentile_95 <- quantile(projected.merged.all$iTEX_UCell, 0.95)
+
+# Assign "Terminally exhausted" to functional.cluster.2 based on the condition
+projected.merged.all$functional.cluster.2 <- ifelse(projected.merged.all$iTEX_UCell >= percentile_95,
+                                                    "Terminally exhausted",
+                                                    projected.merged.all$functional.cluster)
+
+```
+
+Recalculate embeddings
+```{r fig.height=8, fig.width=10}
+
+DefaultAssay(projected.merged.all) <- "integrated"
+ndim <- dim(ref.use@misc$umap_object$data)[2]
+projected.merged.all <- RunUMAP(projected.merged.all, dims = 1:ndim)
+
+```
+
+Internal controls:
+
+[1] Map functional cluster predictions back to original objects (work with human genes)
+```{r}
+
+studies.included <- names(projected.by.study)
+gated.ann <- lapply(studies.included, function(n) {
+    x <- gated.list[[n]]
+    x$functional.cluster <- NA
+    
+    ann <- projected.by.study[[n]]$functional.cluster
+    x$functional.cluster[names(ann)] <- ann
+    
+#    print(table(x$functional.cluster, useNA = "ifany"))
+    x
+})
+names(gated.ann) <- names(projected.by.study)
+
+```
+
+[2] Show ProjecTILs annotations
+```{r}
+palette<- c("#E55454", "#32CD32", "#FFA500", "gray70", "#00BFFF",  "#8A2BE2", "#FF1493")
+
+names(my.colors) <- levels(factor(projected.merged.all$functional.cluster))
+pll <- lapply(names(gated.ann),
+       FUN = function(x) {
+          DimPlot(gated.ann[[x]], group.by="functional.cluster", cols = palette) + ggtitle(x)
+       })
+
+wrap_plots(pll)
+ggsave("plots/Zheng.sets.by.functional.cluster.pdf", height=18, width=35)
+```
+
+[3] Confirm coherence between ProjecTILs and original annotations
+```{r}
+
+pll <- lapply(names(gated.ann),
+       FUN = function(x) {
+        tt <- t(table(zheng=gated.ann[[x]]$meta.cluster,projectils=gated.ann[[x]]$functional.cluster))
+        ggplot(data = melt(tt), aes(x=zheng, y=projectils, fill=value)) + geom_tile()  + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+         
+       })
+wrap_plots(pll)
+
+ggsave("plots/Zheng.vs.projectils.heatmaps.pdf", height=18, width=35)
+
+```
+
+[4] Check Texem markers
+```{r}
+
+typical.Texem <- c("TOX","ENTPD1","CXCL13","CTLA4","HAVCR2","LAG3","PDCD1","IL7R", "TCF7", "GZMK","GZMM", "ANXA1", "CCL5", "ITGAM", "ENTPD1")
+
+DefaultAssay(projected.merged.all) <- "RNA"
+
+pll <- FeaturePlot(projected.merged.all, combine = F, max.cutoff = 'q98',
+            features=typical.Texem) 
+
+pll <- lapply(pll, function(x) {
+   x + scale_color_viridis(option="D", direction=1, begin=0.2) + 
+      theme(aspect.ratio = 1, axis.title=element_blank(),
+        axis.text=element_blank(),
+        axis.ticks=element_blank())
+})
+wrap_plots(pll)
+
+ggsave("plots/markers.integrated.UMAP.pdf", height=20, width=20)
+
+```
+[5] Check phenotype markers
+```{r}
+
+phenotype.markers <- c("CD8A","CD4","TCF7","CCR7","CD69","GZMK","GZMB","HAVCR2","LAG3","ENTPD1","CXCR6","MKI67","TOP2A","ANXA1","GZMM","ZBTB16","HIVEP3","IFIT3","HSP90AA1","SELL")
+
+DefaultAssay(projected.merged.all) <- "RNA"
+
+pll <- FeaturePlot(projected.merged.all, combine = F, max.cutoff = 'q98',
+            features=phenotype.markers)
+
+pll <- lapply(pll, function(x) {
+   x + scale_color_viridis(option="D", direction=1, begin=0.2) + 
+      theme(aspect.ratio = 1, axis.title=element_blank(),
+        axis.text=element_blank(),
+        axis.ticks=element_blank())
+})
+wrap_plots(pll)
+
+ggsave("plots/FigS1a_phenotype markers.pdf", width = 20, height = 15)
+
+```
+[6] Check Chu signatures
+```{r}
+
+classification.names <- gsub(" ", ".", classification.names)
+
+DefaultAssay(projected.merged.all) <- "RNA"
+
+pll <- FeaturePlot(projected.merged.all, combine = F, max.cutoff = 'q98',
+            features=classification.names)
+
+pll <- lapply(pll, function(x) {
+   x + scale_color_viridis(option="D", direction=1, begin=0.2) + 
+      theme(aspect.ratio = 1, axis.title=element_blank(),
+        axis.text=element_blank(),
+        axis.ticks=element_blank())
+})
+
+wrap_plots(pll)
+
+ggsave("plots/FigS1a_phenotype markers.pdf", width = 20, height = 15)
+
+```
+
+[6.2] Check Chu signatures (split)
+```{r}
+
+print(classification.names)
+
+pll <- FeaturePlot(projected.merged.all, combine = F, max.cutoff = 'q95', min.cutoff = 'q25',
+                   features = c("Chu_Stress.response_UCell"), split.by = "functional.cluster.2", pt.size = 0.25)
+pll <- lapply(pll, function(x) {
+   x + scale_color_viridis(option="D", direction=1, begin=0.1) + 
+      theme(aspect.ratio = 1, axis.title=element_blank(),
+        axis.text=element_blank(),
+        axis.ticks=element_blank())
+})
+wrap_plots(pll)
+
+ggsave("plots/FigS1a_phenotype markers.pdf", width = 20, height = 15)
+
+```
+
+Save Seurat object
+```{r}
+
+datapath <- "/Users/endikaprieto/Library/CloudStorage/OneDrive-VHIO/colaboraciones/Asier Antonana/CD11b_single_cell"
+
+saveRDS(projected.merged.all, file.path(datapath, "Seurat/VHIO.seurat.projected.ds.rds"))
+
+```
+
+## Load pre-processed data
+
+Load Seurat object
+```{r}
+#saveRDS(projected.merged.all, file.path(datapath, "Seurat", "Zheng.seurat.projected.ds.rds"))
+
+datapath <- "/Users/endikaprieto/Library/CloudStorage/OneDrive-VHIO/colaboraciones/Asier Antonana/CD11b_single_cell"
+projected.merged.all <- readRDS(file.path(datapath, "Seurat/VHIO.seurat.projected.ds.rds"))
+
+ref.use <- load.reference.map(ref = "/Users/endikaprieto/Library/CloudStorage/OneDrive-VHIO/proj_TCR PBL/ProjecTILs/CD8T_human_ref_v1.rds")
+
+```
+
+Load gene-signatures
+```{r}
+
+## Proteasome-related genes
+
+gene.signatures <- list(
+  "exhaustion" = c("TCF7","CCR7","IL7R","CD4","CD8A","GZMB","GZMK","TOX","PDCD1","LAG3","HAVCR2","CX3CR1","CXCL13"),
+  "proteasome" = c("PSMA1","PSMA2","PSMA3","PSMA4","PSMA5","PSMA6","PSMA7","PSMB1","PSMB2","PSMB3","PSMB4","PSMB5","PSMB6","PSMB7","PSMC1","PSMC2","PSMC3","PSMC4","PSMC5","PSMC6","PSMD1","PSMD2","PSMD3","PSMD4","PSMD6","PSMD7","PSMD8","PSMD11","PSMD12","PSMD13","PSMD14"),
+  "inducible.proteasome" = c("PSMB8", "PSMB9", "PSMB10"),
+  "thymoproteasome" = c("PSMB11"),
+  "chaperones" = c("PSMG2", "POMP", "PSMD9"),
+  "PA28" = c("PSME1", "PSME2", "PSME3"),
+  "PA200" = c("PSME4"),
+  "iTEX" = c("PDCD1", "HAVCR2", "LAG3", "CTLA4", "ENTPD1", "TNFRSF9", "TNFRSF4", "CCL3", "CXCL13", "CRTAM", "TOX", "TCF7-", "IFNG-", "TNF-")
+)
+
+signature.names <- paste0(names(gene.signatures), "_UCell")
+
+## Signatures from Chu et al. Nat Med 2023
+
+# DOI: https://doi.org/10.1038/s41591-023-02371-y
+# Direct download link: https://static-content.springer.com/esm/art%3A10.1038%2Fs41591-023-02371-y/MediaObjects/41591_2023_2371_MOESM3_ESM.xlsx
+
+file_path <- "/Users/endikaprieto/Library/CloudStorage/OneDrive-VHIO/proj_proteasome/bioinformatics/single-cell analysis"
+gene.list <- read_excel(paste0(file_path, "/41591_2023_2371_MOESM3_ESM.xlsx"), sheet = 5, skip = 1, col_names = TRUE)
+
+colnames(gene.list)
+
+classification <- list()
+
+for (i in colnames(gene.list)){
+  a <- gene.list[[i]]
+  a <- as.character(na.omit(a))
+  classification[[as.character(paste0("Chu_", i))]] <- a
+}
+
+classification.names <- paste0(names(classification), "_UCell")
+
+```
+
+
+### Fig. 1a
+
+Plot by study
+```{r}
+
+nb.cols <- 25 # number of studies
+
+my.colors <- colorRampPalette(brewer.pal(8, "Set1"))(nb.cols)
+DimPlot(projected.merged.all, reduction = "umap", pt.size = 0.25, cols=my.colors, group.by = "dataset") + 
+  NoLegend() +
+  theme(aspect.ratio = 1)
+
+#ggsave(file.path(datapath,"plots_paper", "Zheng.by.study.pdf"), height = 10)
+
+```
+
+Plot by Seurat cluster
+```{r}
+
+levels(factor(projected.merged.all$functional.cluster))
+
+my.colors <- c("#E55454", "#32CD32", "#FFA500", "gray70", "#00BFFF",  "#8A2BE2", "#FF1493", "gray30")
+names(my.colors) <- levels(factor(projected.merged.all$functional.cluster.2))
+DimPlot(projected.merged.all, reduction = "umap", pt.size = 0.25, cols=my.colors, group.by = "functional.cluster.2") + theme(aspect.ratio = 1)
+
+#ggsave(file.path(datapath,"plots_paper", "Zheng.by.study.phenotype.pdf"), height = 10)
+
+
+```
+
+Plot by Seurat cluster (split)
+```{r}
+
+DimPlot(projected.merged.all, group.by = "functional.cluster.2", split.by = "functional.cluster.2", cols= my.colors, pt.size = 0.25) +
+  theme(aspect.ratio = 1)
+
+#ggsave(file.path(datapath, "plots_paper", "Zheng.by.study.plot.separated.pdf"), height=10)
+
+```
+
+### Fig. 1b
+
+Expression of typical phenotypic markers
+```{r}
+
+my.order <- c("CD8.NaiveLike", "CD8.CM", "CD8.MAIT", "CD8.EM", "CD8.TEMRA", "CD8.TPEX", "CD8.TEX", "Terminally exhausted")
+
+# Set the order of identities in the Seurat object
+projected.merged.all.order <- projected.merged.all
+projected.merged.all.order$functional.cluster.2 <- factor(projected.merged.all$functional.cluster.2, levels = my.order)
+
+DefaultAssay(projected.merged.all.order) <- "RNA"
+
+genes <- c("SELL", "TCF7", "LEF1", "CCR7", "S1PR1", "LMNA", "IL7R", "GZMK", "FGFBP2",
+    "FCGR3A", "XCL1", "XCL2", "CD200", "CRTAM", "GNG4", "TOX", "PDCD1", "HAVCR2",
+    "GZMB", "PRF1", "LAG3", "KLRB1", "TRAV1-2")
+
+DotPlot(projected.merged.all.order, group.by = "functional.cluster.2", features = genes, cols="RdBu", scale=T, col.max=1.5) +
+  theme(axis.text.x = element_text(angle = 45, hjust=1)) +
+  theme(aspect.ratio = 0.5)
+  
+ggsave(file.path(datapath, "plots_paper", "Zheng.dotplot.phenotype.pdf"), height = 5)
+
+```
+
+### Fig. 1c
+
+```{r}
+
+print(classification.names)
+
+pll <- FeaturePlot(projected.merged.all, combine = F, max.cutoff = 'q95', min.cutoff = 'q50',
+                   features = c("Chu_Anergy_UCell"), split.by = "functional.cluster.2", pt.size = 0.25)
+pll <- lapply(pll, function(x) {
+   x + scale_color_viridis(option="D", direction=1, begin=0.1) + 
+      theme(aspect.ratio = 1, axis.title=element_blank(),
+        axis.text=element_blank(),
+        axis.ticks=element_blank())
+})
+
+wrap_plots(pll)
+
+ggsave(file.path(datapath, "plots_paper", "Chu_Exhaustion_UCell.pdf"), height = 10)
+
+```
+
+### Fig. 1d
+
+Volcano plot
+```{r warning=FALSE}
+
+generate_combinations <- function(combinations) {
+  comb_list <- list()
+  for (i in 1:(length(combinations) - 1)) {
+    for (j in (i + 1):length(combinations)) {
+      comb_list[[length(comb_list) + 1]] <- c(combinations[i], combinations[j])
+    }
+  }
+  return(comb_list)
+}
+
+combinations <- c("CD8.CM", "CD8.EM", "CD8.NaiveLike", "CD8.TEX", "CD8.TEMRA", "CD8.TPEX", "CD8.MAIT", "Terminally exhausted")
+pairwise_combinations <- generate_combinations(combinations)
+
+#pairwise_combinations <- pairwise_combinations[c(2,8,12,19:21,24,26)]
+
+# List to store plots
+plot_list <- list()
+proteasome_genes_list <- list()
+
+# Loop through each combination
+for (comb in pairwise_combinations) {
+  cluster1 <- comb[1]
+  cluster2 <- comb[2]
+  
+  # Filter data for the current combination
+  current_cluster_data <- subset(projected.merged.all, functional.cluster.2 %in% comb)
+
+  markers.genes <-wilcoxauc(X = current_cluster_data, 'functional.cluster.2')
+  markers.genes$log10p <- -log10(markers.genes$padj)
+  dplyr::count(markers.genes, group)
+  markers.genes <- markers.genes %>%
+  #dplyr::filter(padj <= 0.05) %>%
+    dplyr::filter(group == cluster2) %>%  # cluster1 or cluster2
+    arrange(desc(logFC)) %>%
+    dplyr::select(feature, logFC,log10p)
+
+'%!in%' <- function(x,y)!('%in%'(x,y))
+
+  proteasome.signature <- c(gene.signatures$proteasome, gene.signatures$inducible.proteasome, gene.signatures$chaperones, gene.signatures$PA28, gene.signatures$PA200)
+  exhaustion.signature <- c(gene.signatures$exhaustion)
+
+  volcano <- markers.genes %>% 
+    mutate(
+      cond = case_when( 
+        logFC >= 0.1 & log10p >= 1.30103 & feature %in% proteasome.signature ~ "orange2",
+        logFC >= 0.1 & log10p >= 1.30103 & feature %!in% proteasome.signature ~ "black",
+        logFC < -0.1 & log10p >= 1.30103 ~ "black",
+        TRUE ~ "gray70"),
+      order = case_when(
+        feature %in% proteasome.signature ~ "2",
+        TRUE ~ "1"
+        )
+    )
+
+  count.prot.genes <- volcano$feature[volcano$cond == "orange2"]
+  proteasome_genes_list[[as.character(paste(comb, collapse = "_vs_"))]] <- count.prot.genes
+  
+  plot_name <- paste0(cluster1, "_vs_", cluster2)
+
+  volcano <- arrange(volcano, order)
+  labels <- c(proteasome.signature)
+  pll <- ggplot(volcano, aes(x= logFC, y= log10p)) + 
+    geom_point(color= volcano$cond, size = ifelse(volcano$cond == "orange2", 2.5, 0.2)) +
+    geom_text_repel(aes(label=ifelse(volcano$cond == "orange2", as.character(feature), '')),
+                  hjust=1.25,
+                  fontface= 3,
+                  max.overlaps = 8000) +
+    xlab(bquote(~log[2]~'FC')) + 
+    xlim(c(-1.15,1.15)) +
+    ylim(c(0,300)) +
+    ylab(bquote(~-log[10]~'padj')) +
+    geom_hline(yintercept=-log10(0.05),linetype="dashed",col="black") +
+    geom_vline(xintercept=0.1,linetype="dashed",col="black") +
+    geom_vline(xintercept=-0.1,linetype="dashed",col="black") +
+    theme(axis.line = element_line(color='black', size=0.5), panel.border = element_rect(color='black', size=0.5, fill=NA), panel.background = NULL) +
+    theme(aspect.ratio = 1, plot.title = element_text(size = 8))
+
+  print(plot_name)
+
+  plot_list[[plot_name]] <- pll + ggtitle(plot_name)
+ 
+  write.table(volcano, file = file.path(datapath, "plots_paper", paste0("volcanos_", plot_name, ".txt")))
+   
+}
+
+wrap_plots(plot_list, ncol = 8, nrow = 4)
+
+#ggsave(file.path(datapath, "plots_paper", "volcano.pdf"), width = 297/12.7, height = 210/12.7)
+
+```
+
+### Fig. 1e
+
+Make heatmap function
+```{r}
+
+nb.cols <- length(matches)
+nb.cols <- 25 # number of studies
+my.colors <- colorRampPalette(brewer.pal(8, "Set1"))(nb.cols)
+
+make.heatmap <- function(data, assay="RNA", genes, method=c("ward.D", "average"), brewer.palette="PRGn") {
+  
+  library(pheatmap)
+  set.seed(123)
+  #Calculate mean expression by subset
+  m <- c()
+  for( g in unique(genes)){
+    m[[g]] <- tapply(data@assays[[assay]][g,],data$subset_dataset_patient, mean)
+  }
+  m <- as.data.frame(m)
+  m.study <- factor(unlist(lapply(strsplit(rownames(m),"@",perl = T),function(x) x[[2]])))
+  m.subset <- factor(unlist(lapply(strsplit(rownames(m),"@",perl = T),function(x) x[[1]])))
+  breaksList = seq(-2, 2, by = 0.25)
+  color = colorRampPalette(rev(brewer.pal(n = 7, name = brewer.palette)))(length(breaksList))
+  gaps_col <- (which(!duplicated(m.subset))-1)[-1]
+  annotation_col = data.frame(
+    Study = m.study, 
+    TIL_Subtype = m.subset
+  )
+  rownames(annotation_col) = rownames(m)
+  palette <- c("#E55454", "#32CD32", "#FFA500", "gray70", "#00BFFF",  "#8A2BE2", "#FF1493", "gray30")
+  palette2 <- my.colors
+  names(palette) <- levels(factor(projected.merged.all$functional.cluster.2))
+  names(palette2) <- levels(m.study)
+  h <- pheatmap::pheatmap(t(m),cluster_rows = F,
+                          cluster_cols = F, scale = "row",
+                          breaks = breaksList, color=color, 
+                          annotation_col = annotation_col, 
+                          gaps_col=gaps_col, show_colnames = F,
+                          annotation_colors = list(TIL_Subtype=palette, Study=palette2), 
+                          fontsize_row=6,fontsize = 7, cellheight = 5,
+                          clustering_method=method)
+  
+  return(h)
+}
+
+```
+
+Heatmap Texem
+```{r r fig.height=8, fig.width=30}
+
+# Proteasome
+
+genes.of.interest <- gene.signatures$proteasome
+data.heat <- projected.merged.all
+DefaultAssay(data.heat) <- "RNA"
+data.heat$dataset_patient <- paste0(data.heat$dataset, "@", data.heat$patient)
+data.heat$subset_dataset_patient <- paste0(data.heat$functional.cluster.2, "@", data.heat$dataset_patient)
+h <- make.heatmap(data.heat, genes=genes.of.interest, brewer.palette = "RdBu")
+#ggsave(plot = h, file.path(datapath, "plots_paper", "heatmap.proteasome.pdf"), width = 15)
+
+# Inducible proteasome
+
+genes.of.interest <- gene.signatures$inducible.proteasome
+data.heat <- projected.merged.all
+DefaultAssay(data.heat) <- "RNA"
+data.heat$dataset_patient <- paste0(data.heat$dataset, "@", data.heat$patient)
+data.heat$subset_dataset_patient <- paste0(data.heat$functional.cluster.2, "@", data.heat$dataset_patient)
+h <- make.heatmap(data.heat, genes=genes.of.interest, brewer.palette = "RdBu")
+#ggsave(plot = h, file.path(datapath, "plots_paper", "heatmap.inducible.proteasome.pdf"), width = 15)
+
+# Chaperones
+
+genes.of.interest <- gene.signatures$chaperones
+data.heat <- projected.merged.all
+DefaultAssay(data.heat) <- "RNA"
+data.heat$dataset_patient <- paste0(data.heat$dataset, "@", data.heat$patient)
+data.heat$subset_dataset_patient <- paste0(data.heat$functional.cluster.2, "@", data.heat$dataset_patient)
+h <- make.heatmap(data.heat, genes=genes.of.interest, brewer.palette = "RdBu")
+#ggsave(plot = h, file.path(datapath, "plots_paper", "heatmap.chaperones.pdf"), width = 15)
+
+# PA28
+
+genes.of.interest <- gene.signatures$PA28
+data.heat <- projected.merged.all
+DefaultAssay(data.heat) <- "RNA"
+data.heat$dataset_patient <- paste0(data.heat$dataset, "@", data.heat$patient)
+data.heat$subset_dataset_patient <- paste0(data.heat$functional.cluster.2, "@", data.heat$dataset_patient)
+h <- make.heatmap(data.heat, genes=genes.of.interest, brewer.palette = "RdBu")
+#ggsave(plot = h, file.path(datapath, "plots_paper", "heatmap.PA28.pdf"), width = 15)
+
+# PA200
+
+genes.of.interest <- gene.signatures$PA200
+data.heat <- projected.merged.all
+DefaultAssay(data.heat) <- "RNA"
+data.heat$dataset_patient <- paste0(data.heat$dataset, "@", data.heat$patient)
+data.heat$subset_dataset_patient <- paste0(data.heat$functional.cluster.2, "@", data.heat$dataset_patient)
+h <- make.heatmap(data.heat, genes=genes.of.interest, brewer.palette = "RdBu")
+#ggsave(plot = h, file.path(datapath, "plots_paper", "heatmap.PA200.pdf"), width = 15)
+
+```
+
+Dotplot proteasome
+```{r}
+
+genes.of.interest <- c(gene.signatures$proteasome, gene.signatures$inducible.proteasome, gene.signatures$chaperones, gene.signatures$PA200, gene.signatures$PA28)
+
+DotPlot(projected.merged.all.order, group.by = "functional.cluster.2", features = genes.of.interest, cols="RdBu", scale=T, col.max=1.5) +
+  theme(axis.text.x = element_text(angle = 45, hjust=1)) +
+  theme(aspect.ratio = 0.5)
+
+#ggsave(file.path(datapath, "plots_paper", "Zheng.dotplot.proteasome.pdf"), width = 12)
+
+```
+### Fig. 1f
+
+Correlation plots
+```{r}
+
+cor.plot <- as.data.frame(projected.merged.all$Chu_Exhaustion_UCell)
+cor.plot$Chu_Stress.response_UCell <- projected.merged.all$Chu_Stress.response_UCell
+cor.plot$proteasome_UCell <- projected.merged.all$proteasome_UCell
+cor.plot$inducible.proteasome_UCell <- projected.merged.all$inducible.proteasome_UCell
+cor.plot$functional.cluster.2 <- projected.merged.all$functional.cluster.2
+colnames(cor.plot) <- c("Chu_Exhaustion_UCell", "Chu_Stress.response_UCell", "proteasome_UCell", "inducible.proteasome_UCell ","functional.cluster.2")
+
+my.colors <- c("#E55454", "#32CD32", "#FFA500", "gray70", "#00BFFF",  "#8A2BE2", "#FF1493", "gray30")
+names(my.colors) <- levels(factor(projected.merged.all$functional.cluster.2))
+
+pll.1 <- ggscatter(cor.plot, x= "proteasome_UCell", y = "Chu_Stress.response_UCell",
+          add = "reg.line", conf.int = TRUE, combine= TRUE,
+          cor.coef = FALSE, cor.method = "pearson",
+          add.params = list(color = "black"),
+          xlab = "proteasome_UCell", ylab = "Chu_Stress.response_UCell",
+          color = "functional.cluster.2",
+          palette = my.colors,
+          size = 2,
+          shape = 3,
+          fullrange = FALSE) + 
+  stat_cor() +
+  theme(aspect.ratio = 1)
+  
+pll.1
+
+#ggsave(file.path(datapath, "plots_paper", "cor.stress.vs.proteasome.pdf"), height = 10)
+
+```
+
+### Fig. 1g
+
+Gene set enrichment analysis (GSEA)
+
+In order to perform the GSEA the annotated gene set is needed. One popular source is the MsigDB from Broad Institute.
+https://www.gsea-msigdb.org/gsea/msigdb/index.jsp
+
+We focused on TEX (named Terminally exhausted) and TEMRA (named CD8.TEMRA) in functional.cluster.2 of projected.merged.all
+
+GSEA analysis
+```{r}
+
+projected.merged.comparisson <- subset(projected.merged.all, subset = functional.cluster.2  %in% c("Terminally exhausted", "CD8.TEMRA"))
+
+markers.genes <- wilcoxauc(X = projected.merged.comparisson, 'functional.cluster.2')
+markers.genes$log10p <- -log10(markers.genes$padj)
+dplyr::count(markers.genes, group)
+markers.genes <- markers.genes %>%
+  dplyr::filter(padj <= 0.05) %>%
+  dplyr::filter(group == "Terminally exhausted") %>%
+  arrange(desc(logFC)) %>%
+  dplyr::select(feature, logFC,log10p)
+ranks<- deframe(markers.genes)
+head(ranks)
+barplot(sort(ranks, decreasing = T))
+
+```
+
+H/C2/C5/C7
+
+```{r}
+
+m_df<- msigdbr(species = "Homo sapiens", category = "H")
+head(m_df)
+fgsea_sets <- m_df %>% split(x = .$gene_symbol, f = .$gs_name)
+names(ranks) <- toupper(names(ranks))
+fgseaRes<- fgsea(fgsea_sets, ranks, minSize=15, maxSize = 500, nperm= 1000)
+head(fgseaRes[order(padj, -abs(NES)), ], n=50)
+#write.xlsx(fgseaRes[,c(1:7)], "GSEA_pathways.xlsx", sheetName = "C2", append = TRUE)
+
+# Filter results to find pathways involved in hypoxia|proteasom|stress|exhaustion
+filtered_fgseaRes <- fgseaRes[grepl("HYPOXIA|PROTEASOM|STRESS|EXHAUSTION", fgseaRes$pathway), ]
+filtered_fgseaRes$pathway <- fgseaRes$pathway[grepl("HYPOXIA|PROTEASOM|STRESS|EXHAUSTION", fgseaRes$pathway)]
+filtered_fgseaRes[order(filtered_fgseaRes$pval), ]
+
+```
+
+```{r}
+
+m_df<- msigdbr(species = "Homo sapiens", category = "C2")
+head(m_df)
+fgsea_sets <- m_df %>% split(x = .$gene_symbol, f = .$gs_name)
+names(ranks) <- toupper(names(ranks))
+fgseaRes<- fgsea(fgsea_sets, ranks, minSize=15, maxSize = 500, nperm= 1000)
+head(fgseaRes[order(padj, -abs(NES)), ], n=200)
+#write.xlsx(fgseaRes[,c(1:7)], "GSEA_pathways.xlsx", sheetName = "C2", append = TRUE)
+
+# Filter results to find pathways involved in hypoxia|proteasom|stress|exhaustion
+filtered_fgseaRes <- fgseaRes[grepl("OXYGEN", fgseaRes$pathway), ]
+filtered_fgseaRes$pathway <- fgseaRes$pathway[grepl("OXYGEN", fgseaRes$pathway)]
+filtered_fgseaRes[order(filtered_fgseaRes$pval), ]
+
+```
+
+```{r}
+
+m_df<- msigdbr(species = "Homo sapiens", category = "C5")
+head(m_df)
+fgsea_sets <- m_df %>% split(x = .$gene_symbol, f = .$gs_name)
+names(ranks) <- toupper(names(ranks))
+fgseaRes<- fgsea(fgsea_sets, ranks, minSize=15, maxSize = 500, nperm= 1000)
+head(fgseaRes[order(padj, -abs(NES)), ], n=200)
+#write.xlsx(fgseaRes[,c(1:7)], "GSEA_pathways.xlsx", sheetName = "C2", append = TRUE)
+
+# Filter results to find pathways involved in hypoxia|proteasom|stress|exhaustion
+filtered_fgseaRes <- fgseaRes[grepl("HYPOXIA|PROTEASOM|STRESS|EXHAUSTION", fgseaRes$pathway), ]
+filtered_fgseaRes$pathway <- fgseaRes$pathway[grepl("HYPOXIA|PROTEASOM|STRESS|EXHAUSTION", fgseaRes$pathway)]
+filtered_fgseaRes[order(filtered_fgseaRes$pval), ]
+
+```
+
+```{r}
+
+m_df<- msigdbr(species = "Homo sapiens", category = "C7")
+head(m_df)
+fgsea_sets <- m_df %>% split(x = .$gene_symbol, f = .$gs_name)
+names(ranks) <- toupper(names(ranks))
+fgseaRes<- fgsea(fgsea_sets, ranks, minSize=15, maxSize = 500, nperm= 1000)
+head(fgseaRes[order(padj, -abs(NES)), ], n=200)
+#write.xlsx(fgseaRes[,c(1:7)], "GSEA_pathways.xlsx", sheetName = "C2", append = TRUE)
+
+# Filter results to find pathways involved in hypoxia|proteasom|stress|exhaustion
+filtered_fgseaRes <- fgseaRes[grepl("HYPOXIA|PROTEASOM|STRESS|EXHAUSTION", fgseaRes$pathway), ]
+filtered_fgseaRes$pathway <- fgseaRes$pathway[grepl("HYPOXIA|PROTEASOM|STRESS|EXHAUSTION", fgseaRes$pathway)]
+filtered_fgseaRes[order(filtered_fgseaRes$pval), ]
+
+```
+
+Gene signatures from GSEA pathways
+```{r}
+
+m_df<- msigdbr(species = "Homo sapiens", category = "C2")
+fgsea_sets.2 <- m_df %>% split(x = .$gene_symbol, f = .$gs_name)
+m_df<- msigdbr(species = "Homo sapiens", category = "C5")
+fgsea_sets.5 <- m_df %>% split(x = .$gene_symbol, f = .$gs_name)
+m_df<- msigdbr(species = "Homo sapiens", category = "C7")
+fgsea_sets.7 <- m_df %>% split(x = .$gene_symbol, f = .$gs_name)
+
+```
+
+Calculation of UCell signature scores (Terminally exhausted vs. TEMRA)
+```{r}
+
+signatures.fgsea_set <- list(BIOCARTA_PROTEASOME_PATHWAY = fgsea_sets.2$BIOCARTA_PROTEASOME_PATHWAY,
+                             KEGG_PROTEASOME = fgsea_sets.2$KEGG_PROTEASOME,
+                             REACTOME_CELLULAR_RESPONSE_TO_HYPOXIA = fgsea_sets.2$REACTOME_CELLULAR_RESPONSE_TO_HYPOXIA,
+                             REACTOME_DETOXIFICATION_OF_REACTIVE_OXYGEN_SPECIES = fgsea_sets.2$REACTOME_DETOXIFICATION_OF_REACTIVE_OXYGEN_SPECIES,
+                             GOCC_PROTEASOME_COMPLEX = fgsea_sets.5$GOCC_PROTEASOME_COMPLEX,
+                             WP_PROTEASOME_DEGRADATION = fgsea_sets.2$WP_PROTEASOME_DEGRADATION,
+                             REACTOME_ANTIGEN_PROCESSING_UBIQUITINATION_PROTEASOME_DEGRADATION = fgsea_sets.2$REACTOME_ANTIGEN_PROCESSING_UBIQUITINATION_PROTEASOME_DEGRADATION,
+                             GOBP_INTRINSIC_APOPTOTIC_SIGNALING_PATHWAY_IN_RESPONSE_TO_OXIDATIVE_STRESS = fgsea_sets.5$GOBP_INTRINSIC_APOPTOTIC_SIGNALING_PATHWAY_IN_RESPONSE_TO_OXIDATIVE_STRESS,
+                             GOBP_REGULATION_OF_OXIDATIVE_STRESS_INDUCED_INTRINSIC_APOPTOTIC_SIGNALING_PATHWAY = fgsea_sets.5$GOBP_REGULATION_OF_OXIDATIVE_STRESS_INDUCED_INTRINSIC_APOPTOTIC_SIGNALING_PATHWAY, 
+                             GOBP_PROTEASOMAL_PROTEIN_CATABOLIC_PROCESS = fgsea_sets.5$GOBP_PROTEASOMAL_PROTEIN_CATABOLIC_PROCESS,
+                             GOCC_PROTEASOME_ACCESSORY_COMPLEX = fgsea_sets.5$GOCC_PROTEASOME_ACCESSORY_COMPLEX
+                            )
+
+DefaultAssay(projected.merged.comparisson) <- "RNA"
+data_seurat <- AddModuleScore_UCell(projected.merged.comparisson, features = signatures.fgsea_set)
+signature.names.gsea <- paste0(names(signatures.fgsea_set), "_UCell")
+
+plotted <- c("iTEX_UCell",
+             "Chu_Exhaustion_UCell",
+             "Chu_Anergy_UCell",
+             "Chu_Glycolysis_UCell",
+             "Chu_Stress.response_UCell",
+             "Chu_Oxidative.phosphorylation_UCell", 
+             "GOCC_PROTEASOME_COMPLEX_UCell",
+             "KEGG_PROTEASOME_UCell",
+             "REACTOME_CELLULAR_RESPONSE_TO_HYPOXIA_UCell",
+             "WP_PROTEASOME_DEGRADATION_UCell",
+             "GOBP_REGULATION_OF_OXIDATIVE_STRESS_INDUCED_INTRINSIC_APOPTOTIC_SIGNALING_PATHWAY_UCell",
+             "GOBP_INTRINSIC_APOPTOTIC_SIGNALING_PATHWAY_IN_RESPONSE_TO_OXIDATIVE_STRESS_UCell",
+             "REACTOME_ANTIGEN_PROCESSING_UBIQUITINATION_PROTEASOME_DEGRADATION_UCell",
+             "BIOCARTA_PROTEASOME_PATHWAY_UCell",
+             "GOCC_PROTEASOME_ACCESSORY_COMPLEX_UCell",
+             "GOBP_PROTEASOMAL_PROTEIN_CATABOLIC_PROCESS_UCell","REACTOME_DETOXIFICATION_OF_REACTIVE_OXYGEN_SPECIES_UCell")
+
+```
+
+Stacked VlnPlot
+
+```{r}
+
+median.stat <- function(x){
+    out <- quantile(x, probs = c(0.5))
+    names(out) <- c("ymed")
+    return(out) 
+}
+
+# Funtion adapted from: https://divingintogeneticsandgenomics.rbind.io/post/stacked-violin-plot-for-visualizing-single-cell-data-in-seurat/
+
+modify_vlnplot <- function(obj, 
+                          feature, 
+                          pt.size = 0, 
+                          plot.margin = unit(c(-0.75, 0, -0.75, 0), "cm"),
+                          ...) {
+  
+  median_value <- median(obj@assays$RNA_Seq$counts[, feature])
+  
+  p <- VlnPlot(obj, group.by = "functional.cluster.2", features = feature, pt.size = pt.size, ... )  + 
+    xlab("") + ylab(feature) + ggtitle("") + 
+    theme(legend.position = "none", 
+          axis.text.x = element_blank(), 
+          axis.ticks.x = element_blank(), 
+          axis.title.y = element_text(size = rel(1), angle = 0), 
+          axis.text.y = element_text(size = rel(1)),
+          plot.margin = plot.margin,
+          aspect.ratio = 0.33)  +
+    coord_flip() +
+    stat_summary(fun = median.stat, geom='point', size = 10, colour = "black") 
+    
+  return(p)
+}
+
+## extract the max value of the y axis
+extract_max <- function(p){
+  ymax <- max(ggplot_build(p)$layout$panel_scales_y[[1]]$range$range)
+  return(ceiling(ymax))
+}
+
+## main function
+StackedVlnPlot <- function(obj, features,
+                          pt.size = 0, 
+                          plot.margin = unit(c(-0.75, 0, -0.75, 0), "cm"),
+                          ...) {
+  # Extract unique values from the "functional.cluster" column
+  idents_to_plot <- unique(obj$`functional.cluster.2`)
+  
+  plot_list <- purrr::map(features, function(x) modify_vlnplot(obj = obj, feature = x, ...))
+  
+  # Add back x-axis title to the bottom plot.
+  plot_list[[length(plot_list)]] <- plot_list[[length(plot_list)]] +
+    theme(axis.text.x = element_text(), axis.ticks.x = element_line())
+
+  # Combine plots into a single column, grouping by "functional.cluster"
+  p <- patchwork::wrap_plots(plotlist = plot_list, ncol = 1, byrow = FALSE)
+  return(p)
+}
+
+# Generate the plot
+
+pll <- StackedVlnPlot(obj = data_seurat, features = plotted)
+
+# Print the plot
+
+ggsave(plot = pll, file.path(file_path, "plots_paper", "GSEA_stacked_vlnplot_TEX_vs_TEMRA.pdf"), height = 49, width = 49)
+
+```
+
+AUC calculation
+```{r}
+
+selFeatures <- plotted
+
+w <- wilcoxauc(t(data_seurat@meta.data[,selFeatures]),y=data_seurat$functional.cluster)
+ww <- w %>% filter(group == "CD8.TEX") %>% arrange(desc(auc)) %>% select(feature, logFC, auc, padj) 
+ww
+
+gll <- ggplot(ww, aes(x=reorder(feature,auc), y=auc)) + geom_bar(stat="identity") + theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1), 
+        axis.title.x=element_blank()) +
+  coord_cartesian(ylim=c(0.5, 0.8)) +
+  ggtitle("Prediction of T cell subtypes") +
+  coord_flip() +
+  theme(aspect.ratio = 1.5)
+
+gll
+
+#ggsave(plot = gll, file.path(datapath, "plots_paper", "GSEA_auc_TEX_vs_TEMRA.pdf"), width = 297/12.7, height = 210/12.7)
+
+```
+
+### Fig. 1h
+
+Correlation between signatures
+```{r}
+
+DefaultAssay(projected.merged.all) <- "RNA"
+data_correlation <- AddModuleScore_UCell(projected.merged.all, features = signatures.fgsea_set)
+signature.names.cor <- paste0(names(signatures.fgsea_set), "_UCell")
+
+cor.plot <- data_seurat@meta.data[, plotted]
+
+# Calculate the Spearman correlation matrix
+cor_matrix <- cor(cor.plot, method = "spearman") 
+ggcorrplot(cor_matrix, type = "upper", lab = TRUE,sig.level = T, hc.order = TRUE) + theme(aspect.ratio = 1)
+
+
+  
+
+
+```
+
+
+### Supplementary Fig. S1
+
+Plot by study (split)
+```{r}
+
+DimPlot(projected.merged.all, reduction = "umap", pt.size = 0.25, cols=my.colors, group.by = "dataset", split.by = "dataset", ncol = 5) + 
+  NoLegend() +
+  theme(aspect.ratio = 1)
+
+ggsave(file.path(datapath, "plots_paper", "Zheng.by.study.separated.pdf"), height=40)
+
+```
+
+Pie chart by study
+```{r}
+
+table <- table(projected.merged.all$dataset)
+labels <- rownames(table)
+number <- as.vector(table)
+
+pdf(file.path(datapath, "plots_paper", "Zheng.pie.by.study.pdf"))
+pie(x = number, labels = labels, main="Contribution by study", col = my.colors, clockwise = T)
+dev.off()
+
+```
+
+Plot by cancerType (split)
+```{r}
+
+DimPlot(projected.merged.all, reduction = "umap", pt.size = 0.25, cols=my.colors, group.by = "cancerType", split.by = "cancerType", ncol = 5) + 
+  NoLegend() +
+  theme(aspect.ratio = 1)
+
+ggsave(file.path(datapath, "plots_paper", "Zheng.by.cancerType.separated.pdf"), height=40)
+
+```
+
+Pie chart by type of cancer
+```{r}
+
+table <- table(projected.merged.all$cancerType)
+labels <- rownames(table)
+number <- as.vector(table)
+
+pdf(file.path(datapath, "plots_paper", "Zheng.pie.by.cancerType.pdf"))
+pie(x = number, labels = labels, main="Contribution by cancerType", col = my.colors, clockwise = T)
+dev.off()
+
+```
+
+### Supplementary Fig. S2a
+
+Expression of Chu et al. 2023 T cell signatures
+```{r}
+
+DotPlot(projected.merged.all.order, group.by = "functional.cluster.2",
+        features = c("Chu_Naïve_UCell",
+                     "Chu_Exhaustion_UCell",
+                     "Chu_TCR.Signaling_UCell",
+                     "Chu_Cytotoxicity_UCell",
+                     "Chu_Anergy_UCell",
+                     "Chu_NFKB.Signaling_UCell",
+                     "Chu_Stress.response_UCell",
+                     "Chu_MAPK.Signaling_UCell",
+                     "Chu_Oxidative.phosphorylation_UCell",
+                     "Chu_Glycolysis_UCell",
+                     "Chu_Fatty.acid.metabolism_UCell"),
+        cols="RdBu", scale=T, col.max=1.5) +
+  theme(axis.text.x = element_text(angle = 45, hjust=1)) +
+  theme(aspect.ratio = 0.5) +
+  NoLegend()
+  
+ggsave(file.path(datapath, "plots_paper", "Zheng.dotplot.Chu_signatures.pdf"), height = 10)
+
+```
+
+### Supplementary Fig. S2b
+
+```{r}
+
+print(classification.names)
+
+# Select desired gene.signatures to plot
+
+pll <- FeaturePlot(projected.merged.all, combine = F, max.cutoff = 'q95', min.cutoff = 'q50',
+                   features = c("Chu_Anergy_UCell"), split.by = "functional.cluster.2", pt.size = 0.25)
+pll <- lapply(pll, function(x) {
+   x + scale_color_viridis(option="D", direction=1, begin=0.1) + 
+      theme(aspect.ratio = 1, axis.title=element_blank(),
+        axis.text=element_blank(),
+        axis.ticks=element_blank())
+})
+wrap_plots(pll)
+
+ggsave(file.path(datapath, "plots_paper", "Chu_Exhaustion_UCell.pdf"), height = 10)
+
+```
+
+### Supplementary Fig. S2c
+
+Correlation between signatures
+```{r}
+
+DefaultAssay(projected.merged.all) <- "RNA"
+data_correlation <- AddModuleScore_UCell(projected.merged.all, features = signatures.fgsea_set)
+signature.names.cor <- paste0(names(signatures.fgsea_set), "_UCell")
+
+cor.plot <- data_seurat@meta.data[, plotted]
+
+# Calculate the Spearman correlation matrix
+cor_matrix <- cor(cor.plot, method = "spearman") 
+pll <- ggcorrplot(cor_matrix, type = "upper", lab = TRUE,sig.level = T, hc.order = TRUE) + theme(aspect.ratio = 1)
+
+ggsave(plot = pll, file.path(datapath, "plots_paper", "correlations_all.pdf"), width = 297/12.7, height = 210/12.7)
+
+```
